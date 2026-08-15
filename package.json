@@ -65,7 +65,7 @@
     "ci": "npm run lint && npm run type-check && npm test && npm run build && npm run verify:boundary && npm run type-check:desktop && npm run test:desktop"
   },
   "devDependencies": {
-    "@types/node": "^20.10.0",
+    "@types/node": "^26.2.0",
     "@types/react": "^19.2.15",
     "@xterm/headless": "^6.0.0",
     "jscpd": "^5.0.15",
