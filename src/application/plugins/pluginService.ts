@@ -14,7 +14,7 @@ export interface PluginRecord {
   id: string
   manifest: PluginManifest
   path: string
-  source: 'local' | 'marketplace'
+  source: 'local' | 'marketplace' | 'bundled'
   enabled: boolean
   state: 'installed' | 'enabled' | 'disabled' | 'error' | 'blocked'
   approvedPermissions: PluginPermission[]
@@ -131,6 +131,7 @@ export class PluginService {
   private warnings: string[]
   private readonly hosts = new Map<string, PluginHostProcess>()
   private readonly mcpClients = new Set<McpClient>()
+  private bundledInitialization: Promise<void> | null = null
 
   constructor(
     storePath: string,
@@ -151,6 +152,8 @@ export class PluginService {
   async initialize(mcpClient: McpClient): Promise<void> {
     this.mcpClients.add(mcpClient)
     await mkdir(this.pluginsRoot, { recursive: true, mode: 0o700 })
+    if (!this.bundledInitialization) this.bundledInitialization = this.ensureBundledPlugins()
+    await this.bundledInitialization
     for (const record of this.data.plugins.filter(plugin => plugin.enabled)) {
       try { await this.activate(record.id) } catch (error) { this.setError(record.id, error) }
     }
@@ -182,6 +185,15 @@ export class PluginService {
   async installMarketplace(id: string, approvedPermissions: PluginPermission[] = []): Promise<PluginSnapshot> {
     const entry = PLUGIN_MARKETPLACE.find(item => item.id === id)
     if (!entry) throw new Error(`Marketplace plugin not found: ${id}`)
+    return this.installMarketplaceEntry(entry, 'marketplace', approvedPermissions, false)
+  }
+
+  private async installMarketplaceEntry(
+    entry: PluginMarketplaceEntry,
+    source: PluginRecord['source'],
+    approvedPermissions: PluginPermission[],
+    enabled: boolean,
+  ): Promise<PluginSnapshot> {
     const temporaryDirectory = await mkdtemp(join(tmpdir(), 'turboflux-plugin-'))
     try {
       await writeFile(join(temporaryDirectory, 'plugin.json'), `${JSON.stringify(entry.manifest, null, 2)}\n`, { mode: 0o600 })
@@ -190,9 +202,44 @@ export class PluginService {
         await mkdir(dirname(target), { recursive: true, mode: 0o700 })
         await writeFile(target, content, { mode: 0o600 })
       }
-      return await this.installInspected(temporaryDirectory, validateManifest(entry.manifest), 'marketplace', approvedPermissions)
+      const snapshot = await this.installInspected(temporaryDirectory, validateManifest(entry.manifest), source, approvedPermissions)
+      if (!enabled) return snapshot
+      const record = this.requireRecord(entry.manifest.id)
+      record.enabled = true
+      record.updatedAt = Date.now()
+      this.persist()
+      return this.list()
     } finally {
       await rm(temporaryDirectory, { recursive: true, force: true })
+    }
+  }
+
+  private async ensureBundledPlugins(): Promise<void> {
+    for (const entry of PLUGIN_MARKETPLACE.filter(candidate => candidate.bundled)) {
+      const existing = this.data.plugins.find(plugin => plugin.id === entry.manifest.id)
+      if (existing) {
+        try {
+          const installed = await this.inspectDirectory(existing.path)
+          if (installed.manifest.version === entry.manifest.version) {
+            if (existing.source !== 'bundled') {
+              existing.source = 'bundled'
+              existing.updatedAt = Date.now()
+              this.persist()
+            }
+            continue
+          }
+        } catch {}
+        const managedRoot = resolve(this.pluginsRoot)
+        const managedPath = resolve(existing.path)
+        const child = relative(managedRoot, managedPath)
+        if (child && child !== '..' && !child.startsWith(`..${sep}`)) await rm(managedPath, { recursive: true, force: true })
+        const enabled = existing.enabled
+        this.data.plugins = this.data.plugins.filter(plugin => plugin.id !== existing.id)
+        this.persist()
+        await this.installMarketplaceEntry(entry, 'bundled', [], enabled)
+        continue
+      }
+      await this.installMarketplaceEntry(entry, 'bundled', [], true)
     }
   }
 
@@ -216,6 +263,7 @@ export class PluginService {
 
   async uninstall(id: string): Promise<PluginSnapshot> {
     const record = this.requireRecord(id)
+    if (record.source === 'bundled') throw new Error('Bundled plugins cannot be uninstalled')
     await this.deactivate(id)
     const managedRoot = resolve(this.pluginsRoot)
     const managedPath = resolve(record.path)

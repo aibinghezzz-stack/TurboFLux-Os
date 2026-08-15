@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   browserToolGroupKind,
   firstVisibleLine,
-  toolIconKind,
+  deepSeekHarnessToolIconKind,
   groupedToolStatus,
   isFinalDeliveryAnswer,
   isTaskPlanTool,
@@ -254,14 +254,14 @@ describe('linear task flow', () => {
     expect(isTaskPlanTool('read_file')).toBe(false)
   })
 
-  it('maps tool names to icon kinds', () => {
-    expect(toolIconKind('browser__open')).toBe('browse')
-    expect(toolIconKind('web_search')).toBe('globe')
-    expect(toolIconKind('grep')).toBe('search')
-    expect(toolIconKind('read_file')).toBe('browse')
-    expect(toolIconKind('apply_patch')).toBe('edit')
-    expect(toolIconKind('run_command')).toBe('api')
-    expect(toolIconKind('create_tasks')).toBe('checklist')
+  it('uses the DeepSeek Harness tool icon families', () => {
+    expect(deepSeekHarnessToolIconKind('browser__open')).toBe('browse')
+    expect(deepSeekHarnessToolIconKind('web_search')).toBe('globe')
+    expect(deepSeekHarnessToolIconKind('grep')).toBe('search')
+    expect(deepSeekHarnessToolIconKind('read_file')).toBe('browse')
+    expect(deepSeekHarnessToolIconKind('apply_patch')).toBe('edit')
+    expect(deepSeekHarnessToolIconKind('run_command')).toBe('api')
+    expect(deepSeekHarnessToolIconKind('create_tasks')).toBe('checklist')
   })
 
   it('does not render settled phases as conversation rows', () => {

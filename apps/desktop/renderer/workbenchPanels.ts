@@ -9,6 +9,7 @@ import {
   workRunStatusLabel,
   workStepDependencies,
 } from './workExecutionPresentation'
+import { describeRuntimeTask, runtimeTaskStatusLabel } from './runtimeTaskPresentation'
 
 export interface WorkbenchPanelActions {
   compactContext(): Promise<void>
@@ -123,11 +124,38 @@ function workStepControls(step: WorkStep, actions: WorkbenchPanelActions): HTMLE
   return controls.childElementCount > 0 ? controls : null
 }
 
+function renderRuntimeProcesses(snapshot: WorkbenchSnapshot): HTMLElement | null {
+  const processes = snapshot.activity.runtimeTasks
+    .filter(task => task.kind === 'shell' || task.kind === 'terminal')
+    .map(task => ({ task, view: describeRuntimeTask(task) }))
+    .filter(item => item.view !== null)
+    .sort((left, right) => right.task.updatedAt - left.task.updatedAt)
+  if (processes.length === 0) return null
+
+  const list = section('终端进程', processes.length)
+  for (const { task, view } of processes) {
+    if (!view) continue
+    const row = document.createElement('div')
+    row.className = `runtime-activity-row status-${task.status}`
+    const marker = document.createElement('i')
+    const copy = document.createElement('span')
+    const title = document.createElement('strong')
+    title.textContent = view.title
+    const detail = document.createElement('small')
+    detail.textContent = view.detail
+    const status = document.createElement('b')
+    status.textContent = runtimeTaskStatusLabel(task.status)
+    copy.append(title, detail)
+    row.append(marker, copy, status)
+    list.append(row)
+  }
+  return list
+}
+
 function renderExecutionStep(
   step: WorkStep,
   run: WorkbenchSnapshot['activity']['execution']['runs'][number],
   actions: WorkbenchPanelActions,
-  refresh: () => void,
   depth = 0,
 ): HTMLElement {
   const wrapper = document.createElement('div')
@@ -160,7 +188,7 @@ function renderExecutionStep(
     if (expandedWorkStepIds.has(step.id)) expandedWorkStepIds.delete(step.id)
     else expandedWorkStepIds.add(step.id)
     const host = wrapper.parentElement
-    if (host) host.replaceChild(renderExecutionStep(step, run, actions, refresh, depth), wrapper)
+    if (host) host.replaceChild(renderExecutionStep(step, run, actions, depth), wrapper)
   })
   wrapper.append(row)
   const controls = workStepControls(step, actions)
@@ -185,7 +213,7 @@ function renderExecutionStep(
       dependencyDetail.textContent = `前置步骤：${dependencies.all.map(item => `${item.title}（${statusLabel(item.status)}）`).join(' · ')}`
       detailHost.append(dependencyDetail)
     }
-    for (const child of orderedWorkSteps(run, step.childIds)) detailHost.append(renderExecutionStep(child, run, actions, refresh, depth + 1))
+    for (const child of orderedWorkSteps(run, step.childIds)) detailHost.append(renderExecutionStep(child, run, actions, depth + 1))
     wrapper.append(detailHost)
   }
   return wrapper
@@ -200,8 +228,13 @@ export function renderActivityPanel(
   container.replaceChildren()
   const execution = snapshot.activity.execution
   const run = selectWorkRun(execution, selectedRunId)
+  const runtimeProcesses = renderRuntimeProcesses(snapshot)
 
   if (!run || run.presentation !== 'work') {
+    if (runtimeProcesses) {
+      container.append(runtimeProcesses)
+      return
+    }
     const blank = document.createElement('div')
     blank.className = 'work-execution-empty'
     blank.innerHTML = '<strong>还没有工作过程</strong><p>复杂工作开始后，步骤、验证和结果会在这里保持同步。</p>'
@@ -270,13 +303,14 @@ export function renderActivityPanel(
   container.append(header)
 
   const rootSteps = orderedWorkSteps(run, run.rootStepIds)
-  const refresh = () => renderActivityPanel(container, snapshot, actions, run.id)
   if (rootSteps.length > 0) {
     const steps = section('步骤')
     steps.classList.add('work-execution-steps')
-    for (const step of rootSteps) steps.append(renderExecutionStep(step, run, actions, refresh))
+    for (const step of rootSteps) steps.append(renderExecutionStep(step, run, actions))
     container.append(steps)
   }
+
+  if (runtimeProcesses) container.append(runtimeProcesses)
 
   const queued = queuedInputs(snapshot)
   if (queued.length > 0) {
@@ -353,7 +387,7 @@ export function renderContextPanel(
   const skill = snapshot.skills.find(item => item.active)
   const skillRow = document.createElement('button')
   skillRow.className = 'panel-link-row'
-  skillRow.innerHTML = `<span><strong>${skill ? skill.name : '能力包'}</strong><small>${skill ? '当前优先使用' : '浏览和管理工作能力'}</small></span><b>›</b>`
+  skillRow.innerHTML = `<span><strong>${skill ? skill.name : '插件'}</strong><small>${skill ? '当前优先使用' : '浏览和管理插件'}</small></span><b>›</b>`
   skillRow.addEventListener('click', () => actions.openSettings('workpacks'))
   const mcpRow = document.createElement('button')
   mcpRow.className = 'panel-link-row'

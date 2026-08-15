@@ -110,6 +110,14 @@ export class ConversationManager {
     return JSON.parse(JSON.stringify(this.interactionState)) as ConversationInteractionState
   }
 
+  getCatalogMeta(updatedAt = this.now()): ConversationMeta {
+    return { ...this.buildMeta(), updatedAt }
+  }
+
+  hasCatalogContent(): boolean {
+    return this.hasPersistableConversationState()
+  }
+
   getCanonicalEvents(): readonly AnyConversationEvent[] {
     return this.canonicalEvents.map(event => structuredClone(event))
   }
@@ -420,7 +428,32 @@ export class ConversationManager {
     if (!this.isPersistenceHealthy()) return false
     const title = requestedTitle.trim().replace(/\s+/g, ' ').slice(0, 80)
     if (!title) return false
-    if (id === this.currentId) this.persist(true)
+    if (id === this.currentId) {
+      const previousCustomTitle = this.customTitles.get(id)
+      const previousGeneratedTitle = this.generatedTitles.get(id)
+      if (source === 'custom') {
+        this.customTitles.set(id, title)
+        this.generatedTitles.delete(id)
+      } else {
+        this.customTitles.delete(id)
+        this.generatedTitles.set(id, title)
+      }
+      try {
+        if (this.journalInitialized) {
+          this.append({ version: 1, type: 'meta', timestamp: this.now(), meta: this.buildMeta() }, 'critical')
+        } else {
+          this.ensureJournal()
+        }
+        this.markSnapshotDirty()
+        return true
+      } catch (error) {
+        if (previousCustomTitle === undefined) this.customTitles.delete(id)
+        else this.customTitles.set(id, previousCustomTitle)
+        if (previousGeneratedTitle === undefined) this.generatedTitles.delete(id)
+        else this.generatedTitles.set(id, previousGeneratedTitle)
+        throw error
+      }
+    }
     const conversation = await loadConversationAsync(id)
     if (!conversation || !sameWorkspacePath(conversation.workspacePath, this.workspacePath)) return false
     conversation.title = title
@@ -615,16 +648,19 @@ export class ConversationManager {
       this.customTitles.delete(conv.id)
       this.generatedTitles.set(conv.id, conv.title)
     }
-    this.engine.restoreFromTurns(conv.activeTurns ?? conv.turns)
+    this.engine.restoreFromTurns(conv.activeTurns ?? conv.turns, {
+      emitRunState: false,
+      emitRuntimeEvents: false,
+    })
     this.engine.restoreModelSurfaceState?.(conv.modelSurface, conv.activeTurns ?? conv.turns)
     this.engine.setContextSegments(conv.contextSegments ?? [])
     this.engine.setContextReservoir(conv.contextReservoir ?? [])
     this.engine.setContextCompactionState?.(conv.contextCompactionState ?? null)
-    this.engine.restoreWorkExecutionSnapshot?.(conv.workExecution)
+    this.engine.restoreWorkExecutionSnapshot?.(conv.workExecution, { emitRuntimeEvent: false })
     const session = this.engine.getSession()
     session.createdAt = conv.createdAt
     session.updatedAt = conv.updatedAt
-    if (this.engine.getMode() !== conv.mode) this.engine.setMode(conv.mode)
+    if (this.engine.getMode() !== conv.mode) this.engine.setMode(conv.mode, { emitRuntimeEvent: false })
     this.snapshotRevision += 1
     this.persistedSnapshotRevision = this.snapshotRevision
     this.lastPersistedSnapshotHash = conversationSnapshotHash(conv)
@@ -640,7 +676,7 @@ export class ConversationManager {
       titleSource: this.customTitles.has(this.currentId) ? 'custom' : 'generated',
       workspacePath: this.workspacePath,
       createdAt: session.createdAt,
-      updatedAt: Date.now(),
+      updatedAt: this.now(),
       mode: session.mode,
       model: this.config.model,
       provider: this.config.provider,

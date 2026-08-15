@@ -406,6 +406,7 @@ describe('AgentEngine MCP dispatch', () => {
       maxTokens: 4096,
       maxTurns: 2,
       workspacePath: workspace,
+      conversationId: 'conversation-1',
     }, new NodeToolExecutor(workspace), stateProvider)
     const callTool = vi.fn(async () => ({
       content: 'mcp result',
@@ -446,7 +447,14 @@ describe('AgentEngine MCP dispatch', () => {
       output: 'mcp result',
       attachments: [{ id: 'visual-1', mime: 'image/png', size: 256 }],
     })
-    expect(callTool).toHaveBeenCalledWith('files', 'replace', { path: 'a.ts' })
+    expect(callTool).toHaveBeenCalledWith('files', 'replace', { path: 'a.ts' }, {
+      execution: {
+        conversationId: 'conversation-1',
+        runId: undefined,
+        toolCallId: 'mcp-1',
+        itemId: 'mcp-1',
+      },
+    })
 
     const dispatchTool = (engine as unknown as {
       dispatchTool: (name: string, args: Record<string, unknown>, toolCallId: string) => Promise<string>

@@ -140,7 +140,7 @@ export function buildWorkPackCatalog(input: WorkPackCatalogInput): WorkPackCatal
       contributions,
       backend: { type: 'plugin', marketplaceId: marketplace.id, pluginId: marketplace.manifest.id },
       emphasis: pluginEmphasis(installed),
-      canUninstall: Boolean(installed),
+      canUninstall: Boolean(installed && installed.source !== 'bundled'),
       supportsToggle: Boolean(installed),
       diagnostics: installed ? [...installed.diagnostics] : [marketplace.manifest.main ? '代码在独立沙箱进程运行' : '声明式能力包，不执行代码'],
       error: installed?.error,

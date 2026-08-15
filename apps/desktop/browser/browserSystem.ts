@@ -16,11 +16,13 @@ import type {
   BrowserActivitySnapshot,
   BrowserDownloadSnapshot,
   BrowserErrorSnapshot,
+  BrowserExecutionSnapshot,
   BrowserSystemEvent,
   BrowserSystemSnapshot,
   BrowserTabSnapshot,
   McpClient,
   McpLocalToolResult,
+  McpToolCallOptions,
 } from '@turboflux/agent-core/extensions'
 import { validateBrowserNavigation } from './browserPolicy'
 import {
@@ -45,6 +47,7 @@ import { browserTools, MAX_OBSERVED_ELEMENTS } from './browserTools'
 const BACKGROUND_BROWSER_BOUNDS = { x: 0, y: 0, width: 1280, height: 800 }
 const MAX_OBSERVED_TEXT = 10_000
 const MAX_DIAGNOSTIC_ENTRIES = 120
+const MAX_BROWSER_EXECUTIONS = 200
 const MAX_BROWSER_DOWNLOAD_BYTES = 250 * 1024 * 1024
 const BROWSER_OPERATION_ABORT_MESSAGE = 'Browser operation aborted'
 
@@ -76,6 +79,7 @@ export class BrowserSystem implements RuntimePausableSystemCapability<BrowserSys
   private nextDownloadId = 1
   private workspacePath: string
   private activity: BrowserActivitySnapshot | undefined
+  private readonly executions = new Map<string, BrowserExecutionSnapshot>()
   private lastError: BrowserErrorSnapshot | undefined
   private readonly downloads = new Map<string, BrowserDownloadSnapshot>()
   private readonly activeDownloads = new Set<DownloadItem>()
@@ -87,17 +91,17 @@ export class BrowserSystem implements RuntimePausableSystemCapability<BrowserSys
     private readonly window: BrowserWindow,
     workspacePath: string,
     private readonly emit: (event: BrowserSystemEvent) => void,
-    scopeKey = 'default',
+    private readonly conversationId = 'default',
   ) {
     this.workspacePath = resolve(workspacePath)
-    this.partition = browserPartition(scopeKey)
+    this.partition = browserPartition(conversationId)
   }
 
   register(client: McpClient): void {
     registerBrowserCapability(
       client,
       browserTools(),
-      (toolName, args, options) => this.enqueueTool(toolName, args, options?.signal),
+      (toolName, args, options) => this.enqueueTool(toolName, args, options),
     )
   }
 
@@ -119,10 +123,12 @@ export class BrowserSystem implements RuntimePausableSystemCapability<BrowserSys
 
   getSnapshot(): BrowserSystemSnapshot {
     return {
+      conversationId: this.conversationId,
       visible: this.visible,
       activeTabId: this.activeTabId,
       tabs: [...this.tabs.values()].map(tab => this.tabSnapshot(tab)),
       activity: this.activity ? { ...this.activity } : undefined,
+      executions: [...this.executions.values()].map(execution => ({ ...execution })),
       downloads: [...this.downloads.values()].map(download => ({ ...download })),
       lastError: this.lastError ? { ...this.lastError } : undefined,
     }
@@ -822,6 +828,7 @@ export class BrowserSystem implements RuntimePausableSystemCapability<BrowserSys
     for (const tab of this.tabs.values()) tab.view.webContents.close({ waitForBeforeUnload: false })
     this.tabs.clear()
     this.activeTabId = null
+    this.executions.clear()
     this.releaseSession?.()
     this.releaseSession = null
   }
@@ -1096,17 +1103,57 @@ export class BrowserSystem implements RuntimePausableSystemCapability<BrowserSys
     this.emitState()
   }
 
-  private async withActivity<T>(phase: BrowserActivityPhase, operation: string, tabId: string | undefined, description: string, work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-    const activity: BrowserActivitySnapshot = { phase, operation, tabId, description, startedAt: Date.now() }
+  private async withActivity<T>(phase: BrowserActivityPhase, operation: string, tabId: string | undefined, description: string, work: () => Promise<T>, options?: McpToolCallOptions): Promise<T> {
+    const startedAt = Date.now()
+    const executionContext = options?.execution
+    if (executionContext?.conversationId && executionContext.conversationId !== this.conversationId) {
+      throw new Error(`Browser execution conversation mismatch: ${executionContext.conversationId}`)
+    }
+    const activity: BrowserActivitySnapshot = {
+      phase,
+      operation,
+      tabId,
+      runId: executionContext?.runId,
+      toolCallId: executionContext?.toolCallId,
+      itemId: executionContext?.itemId,
+      description,
+      startedAt,
+    }
+    const execution = executionContext ? {
+      conversationId: this.conversationId,
+      runId: executionContext.runId,
+      toolCallId: executionContext.toolCallId,
+      itemId: executionContext.itemId,
+      operation,
+      phase,
+      status: 'running' as const,
+      tabId,
+      startedAt,
+      updatedAt: startedAt,
+    } satisfies BrowserExecutionSnapshot : undefined
+    if (execution) {
+      this.executions.delete(execution.toolCallId)
+      this.executions.set(execution.toolCallId, execution)
+      while (this.executions.size > MAX_BROWSER_EXECUTIONS) {
+        const oldest = this.executions.keys().next().value
+        if (!oldest) break
+        this.executions.delete(oldest)
+      }
+    }
+    this.visible = true
+    if (this.presentationEnabled && this.activeTabId) this.attachActiveView()
     this.activity = activity
     this.lastError = undefined
     this.emitState()
     try {
       const result = await work()
-      assertBrowserOperationActive(signal)
+      assertBrowserOperationActive(options?.signal)
+      this.finishExecution(execution, 'completed', result)
       return result
     } catch (error) {
-      if (signal?.aborted || isOperationAbort(error)) throw browserOperationAbortError()
+      const cancelled = options?.signal?.aborted || isOperationAbort(error)
+      this.finishExecution(execution, cancelled ? 'cancelled' : 'failed')
+      if (cancelled) throw browserOperationAbortError()
       const lastError = this.lastError as BrowserErrorSnapshot | undefined
       if (!lastError || lastError.occurredAt < activity.startedAt) {
         this.recordError({ code: 'operation-failed', message: error instanceof Error ? error.message : String(error), tabId, recoverable: true })
@@ -1120,19 +1167,34 @@ export class BrowserSystem implements RuntimePausableSystemCapability<BrowserSys
     }
   }
 
-  private enqueueTool<T>(toolName: string, args: Record<string, unknown>, externalSignal?: AbortSignal): Promise<T> {
+  private finishExecution(execution: BrowserExecutionSnapshot | undefined, status: BrowserExecutionSnapshot['status'], result?: unknown): void {
+    if (!execution) return
+    const resultTabId = result && typeof result === 'object' && typeof (result as { tabId?: unknown }).tabId === 'string'
+      ? (result as { tabId: string }).tabId
+      : undefined
+    const tabId = resultTabId || execution.tabId || this.activeTabId || undefined
+    const tab = tabId ? this.tabs.get(tabId) : undefined
+    execution.status = status
+    execution.tabId = tabId
+    execution.title = tab?.title
+    execution.url = tab?.url
+    execution.updatedAt = Date.now()
+    this.emitState()
+  }
+
+  private enqueueTool<T>(toolName: string, args: Record<string, unknown>, options?: McpToolCallOptions): Promise<T> {
     const requestedTabId = typeof args.tab_id === 'string' ? args.tab_id : this.activeTabId || undefined
     const stopLoading = () => {
       const tab = requestedTabId ? this.tabs.get(requestedTabId) : undefined
       if (tab?.view.webContents.isLoading()) tab.view.webContents.stop()
     }
     return this.operations.enqueue(async signal => {
-      const result = await this.handleTool(toolName, args, signal)
+      const result = await this.handleTool(toolName, args, signal, options)
       return result as T
-    }, { externalSignal, onAbort: stopLoading })
+    }, { externalSignal: options?.signal, onAbort: stopLoading })
   }
 
-  private async handleTool(toolName: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+  private async handleTool(toolName: string, args: Record<string, unknown>, signal?: AbortSignal, executionOptions?: McpToolCallOptions): Promise<unknown> {
     assertBrowserOperationActive(signal)
     if (!this.activeTabId && !['open', 'tabs', 'close'].includes(toolName)) await this.createTab('about:blank')
     const tabId = typeof args.tab_id === 'string' ? args.tab_id : this.activeTabId || undefined
@@ -1201,6 +1263,6 @@ export class BrowserSystem implements RuntimePausableSystemCapability<BrowserSys
       case 'close': return this.closeTab(args.tab_id as string | undefined)
       default: throw new Error(`Unknown browser tool: ${toolName}`)
       }
-    }, signal)
+    }, { ...executionOptions, signal })
   }
 }

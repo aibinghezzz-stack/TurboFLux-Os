@@ -841,6 +841,25 @@ export function appendConversationJournalBatch(id: string, entries: Conversation
   try { chmodSync(filePath, 0o600) } catch {}
 }
 
+export function updateConversationMetadata(meta: ConversationMeta): boolean {
+  let legacyPath: string
+  let journalPath: string
+  try {
+    legacyPath = conversationPath(meta.id, 'json')
+    journalPath = conversationPath(meta.id, 'jsonl')
+  } catch {
+    return false
+  }
+  if (!existsSync(legacyPath) && !existsSync(journalPath)) return false
+  appendConversationJournal(meta.id, {
+    version: 1,
+    type: 'meta',
+    timestamp: meta.updatedAt,
+    meta: { ...meta },
+  })
+  return true
+}
+
 export function saveConversation(conv: PersistedConversation, options: { compact?: boolean } = {}): void {
   const persistedConversation = redactComputerConversation(conv)
   const entry: ConversationJournalEntry = {

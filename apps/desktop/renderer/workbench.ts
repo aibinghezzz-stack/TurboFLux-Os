@@ -98,7 +98,8 @@ import {
 } from './linearTaskFlow'
 import { createWorkPlanDockRenderer } from './workPlanPresentation'
 import { SerializedAsyncQueue, SingleFlightGuard } from './interactionConcurrency'
-import { projectWorkspaceConversationGroups } from './workspaceConversationProjection'
+import { projectWorkspaceConversationGroups, UNGROUPED_WORKSPACE_KEY } from './workspaceConversationProjection'
+import { composerPopoverPlacement } from './composerPopoverPlacement'
 
 type InspectorTab = 'overview' | 'activity' | 'outputs' | 'browser' | 'context' | 'git'
 type BrowserDisplayMode = 'workspace' | 'inspector' | null
@@ -145,6 +146,9 @@ const icon = (name: string) => {
     edit: '<svg viewBox="0 0 24 24"><path d="M4 20h4l11-11a2.8 2.8 0 0 0-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></svg>',
     close: '<svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></svg>',
     account: '<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5.5 20a6.5 6.5 0 0 1 13 0"/></svg>',
+    approvalAsk: '<svg viewBox="0 0 24 24"><path d="M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v6a2.5 2.5 0 0 1-2.5 2.5H12l-4.5 4v-4h-.5A2.5 2.5 0 0 1 5 12.5z"/><path d="M10 9a2 2 0 1 1 3.3 1.5c-.8.6-1.3 1-1.3 2"/><path d="M12 15h.01"/></svg>',
+    approvalAgent: '<svg viewBox="0 0 24 24"><path d="M12 3.5 19 6v5.2c0 4.1-2.5 7.6-7 9.3-4.5-1.7-7-5.2-7-9.3V6z"/><path d="m8.8 11.8 2.1 2.1 4.5-4.6"/></svg>',
+    approvalFull: '<svg viewBox="0 0 24 24"><rect x="4.5" y="10" width="15" height="10" rx="2.5"/><path d="M8 10V7.5a4 4 0 0 1 7.4-2.1"/><path d="M12 14v2.5"/></svg>',
   }
   return `<span class="icon icon-${name}">${icons[name] || icons.grid}</span>`
 }
@@ -158,8 +162,6 @@ export function mountWorkbench(app: HTMLDivElement): void {
         <button class="new-task" id="new-task">${icon('plus')}<span>新建任务</span></button>
 
         <nav class="sidebar-nav" aria-label="工作区导航">
-          <button class="sidebar-nav-item active" data-view="workbench">${icon('grid')}<span>工作台</span></button>
-          <button class="sidebar-nav-item" data-view="projects">${icon('folder')}<span>项目</span></button>
           <button class="sidebar-nav-item" data-view="automations">${icon('command')}<span>自动化</span></button>
           <button class="sidebar-nav-item work-packs-entry" data-view="skills">${icon('plug')}<span>插件</span></button>
         </nav>
@@ -168,15 +170,8 @@ export function mountWorkbench(app: HTMLDivElement): void {
           <div class="workspace-task-header">
             <span>工作区</span>
             <span class="workspace-task-actions">
-              <button class="tiny-button" id="workspace-task-search-toggle" title="搜索任务" aria-label="搜索任务">${icon('search')}</button>
-              <button class="tiny-button" id="workspace-task-manage" title="管理工作区" aria-label="管理工作区">${icon('settings')}</button>
               <button class="tiny-button" id="workspace-task-add" title="添加工作区" aria-label="添加工作区">${icon('plus')}</button>
             </span>
-          </div>
-          <div class="workspace-task-search" id="workspace-task-search" role="search" hidden>
-            ${icon('search')}
-            <input id="workspace-task-search-input" type="search" aria-label="搜索工作区或任务" placeholder="搜索工作区或任务" autocomplete="off" />
-            <button id="workspace-task-search-close" type="button" title="关闭搜索" aria-label="关闭搜索">${icon('close')}</button>
           </div>
           <div id="conversation-list"></div>
         </div>
@@ -212,7 +207,7 @@ export function mountWorkbench(app: HTMLDivElement): void {
               <div class="composer-capability-tray" id="composer-capability-tray"></div>
               <textarea id="task-input" placeholder="交代一项工作，或粘贴需要处理的内容" rows="2"></textarea>
               <div class="composer-bottom">
-                <div class="composer-tools"><button class="composer-add-button" id="composer-add" title="添加文件" aria-haspopup="menu" aria-expanded="false">${icon('plus')}</button><button class="composer-slant-tab capability-tab" id="capability-tab" title="选择能力包" aria-haspopup="menu" aria-expanded="false">${icon('plug')}<span id="capability-name">能力包</span><b id="capability-count" aria-hidden="true"></b><span class="chevron-down">⌄</span></button><button class="approval-pill" id="approval-pill" aria-haspopup="menu" aria-expanded="false"><span class="approval-status-dot"></span><span id="approval-name">审批策略</span><span class="chevron-down">⌄</span></button></div>
+                <div class="composer-tools"><button class="composer-add-button" id="composer-add" title="添加文件" aria-haspopup="menu" aria-expanded="false">${icon('plus')}</button><button class="composer-slant-tab capability-tab" id="capability-tab" title="选择插件" aria-haspopup="menu" aria-expanded="false">${icon('plug')}<span id="capability-name">插件</span><b id="capability-count" aria-hidden="true"></b><span class="chevron-down">⌄</span></button><button class="approval-pill" id="approval-pill" aria-haspopup="menu" aria-expanded="false"><span class="approval-status-dot"></span><span id="approval-name">审批策略</span><span class="chevron-down">⌄</span></button></div>
                 <div class="composer-submit"><button class="composer-context" id="composer-context" type="button" aria-label="查看上下文使用情况"><span class="composer-context-ring" aria-hidden="true"></span></button><button class="composer-slant-tab reasoning-tab" id="reasoning-tab" data-reasoning-tone="none" title="选择推理强度" aria-haspopup="menu" aria-expanded="false"><span>推理</span><strong id="reasoning-name">加载中</strong><span class="chevron-down">⌄</span></button><button class="model-pill" id="model-pill" aria-haspopup="menu" aria-expanded="false"><span class="model-pill-icon" id="model-icon" aria-hidden="true"></span><span id="model-name">加载中</span><span class="model-pill-multiplier" id="model-multiplier"></span><span class="chevron-down">⌄</span></button><button class="run-button" id="run-button" title="发送">${icon('arrow')}</button></div>
               </div>
             </section>
@@ -390,6 +385,9 @@ export function mountWorkbench(app: HTMLDivElement): void {
       return {
         call,
         result,
+        onOpenBrowser: isBuiltInBrowserTool(call.name)
+          ? () => void openBrowserExecution(call.id)
+          : undefined,
         onPreviewDiff: change => {
           selectedChange = change
           openInspector('outputs')
@@ -433,8 +431,9 @@ export function mountWorkbench(app: HTMLDivElement): void {
   let snapshotRefreshPending = false
   let renderedConversationSignature = ''
   let renderedConversationListSignature = ''
-  let workspaceTaskQuery = ''
+  const workspaceTaskQuery = ''
   let expandedWorkspaceTaskGroups = new Set<string>()
+  let currentWorkspaceTaskGroupKey = ''
   const workspaceGroupExpansionStorageKey = 'turboflux.workspace-groups.expansion'
   let workspaceGroupExpansion: Record<string, boolean> = (() => {
     try {
@@ -444,8 +443,8 @@ export function mountWorkbench(app: HTMLDivElement): void {
       return {}
     }
   })()
-  let renderedTaskCompanionSignature = ''
   let browserSnapshot: BrowserSystemSnapshot | null = null
+  let lastAutoOpenedBrowserToolCallId = ''
   let browserDisplayMode: BrowserDisplayMode = null
   let browserModeBeforeFullScreen: BrowserDisplayMode = null
   let fullScreenSurfaceDepth = 0
@@ -468,6 +467,7 @@ export function mountWorkbench(app: HTMLDivElement): void {
   let historyRewriteSpacer: HTMLElement | null = null
   let automationEditorId: string | null = null
   let inspectorFastCloseTimer: number | null = null
+  let renderedTaskCompanionSignature = ''
   let transcriptFollowState = createTranscriptFollowState(transcript)
   let transcriptScrollFrame: number | null = null
   let transcriptPointerScrolling = false
@@ -797,6 +797,17 @@ export function mountWorkbench(app: HTMLDivElement): void {
 
   function renderBrowserSnapshot(snapshot: BrowserSystemSnapshot) {
     browserSnapshot = snapshot
+    const agentToolCallId = snapshot.activity?.toolCallId || ''
+    if (
+      snapshot.visible
+      && agentToolCallId
+      && agentToolCallId !== lastAutoOpenedBrowserToolCallId
+      && fullScreenSurfaceDepth === 0
+    ) {
+      lastAutoOpenedBrowserToolCallId = agentToolCallId
+      browserDisplayMode = 'inspector'
+      openInspector('browser')
+    }
     if (!snapshot.visible) browserDisplayMode = null
     else if (!browserDisplayMode) browserDisplayMode = 'inspector'
     const workspaceVisible = snapshot.visible && browserDisplayMode === 'workspace'
@@ -878,6 +889,18 @@ export function mountWorkbench(app: HTMLDivElement): void {
     }
   }
 
+  async function openBrowserExecution(toolCallId: string) {
+    if (!bridge) return
+    try {
+      const latest = await bridge.browserGetState()
+      renderBrowserSnapshot(latest)
+      const execution = (latest.executions || []).find(candidate => candidate.toolCallId === toolCallId)
+      await openBrowserTabInInspector(execution?.tabId || '')
+    } catch (error) {
+      showToast(errorMessage(error))
+    }
+  }
+
   async function closeBrowser() {
     if (!bridge) return
     try {
@@ -942,24 +965,6 @@ export function mountWorkbench(app: HTMLDivElement): void {
     return { title, detail, tabId: active.id }
   }
 
-  function taskCompanionOutputCount(snapshot: WorkbenchSnapshot): number {
-    const startedAt = snapshot.runtime.runState.startedAt || activeTaskStartedAt
-    if (!startedAt) return 0
-    const outputPaths = new Set<string>()
-    const artifacts = snapshot.artifacts.artifacts.filter(artifact => (
-      artifact.updatedAt >= startedAt
-      && (!artifact.conversationId || artifact.conversationId === snapshot.conversation.id)
-    ))
-    for (const artifact of artifacts) outputPaths.add(artifact.path)
-    for (const turn of snapshot.conversation.turns) {
-      if (turn.timestamp < startedAt) continue
-      for (const result of turn.toolResults || []) {
-        if (result.changeSummary) outputPaths.add(result.changeSummary.path)
-      }
-    }
-    return outputPaths.size
-  }
-
   function renderTaskCompanion() {
     const snapshot = currentSnapshot
     const active = Boolean(snapshot && currentMainView === 'workbench' && ['running', 'paused', 'awaiting-action'].includes(snapshot.runtime.status))
@@ -1015,9 +1020,7 @@ export function mountWorkbench(app: HTMLDivElement): void {
         if (item.kind === 'work') openInspector('activity')
         else if (item.kind === 'preview' && preview?.url) void openBrowserInInspector(preview.url)
         else if (item.kind === 'browser' && browser?.tabId) void openBrowserTabInInspector(browser.tabId)
-        else if (item.kind === 'subagents') {
-          openInspector('activity')
-        } else if (item.kind === 'computer') openInspector('activity')
+        else if (item.kind === 'subagents' || item.kind === 'computer') openInspector('activity')
       })
       taskCompanion.append(button)
     }
@@ -1074,11 +1077,12 @@ export function mountWorkbench(app: HTMLDivElement): void {
       leaveFullScreenSurface()
     },
     computerControls: computerControls || undefined,
+    getComposerPopoverPlacement: () => composerPopoverPlacement(mainScroll.classList.contains('conversation-mode')),
     onSnapshot: snapshot => applySnapshot(snapshot),
     onUseCapability: async capability => {
       if (capability.type === 'skill') {
         const skill = currentSnapshot?.skills.find(item => item.id === capability.id)
-        if (!skill) throw new Error('能力包已安装，但工作流暂时无法读取')
+        if (!skill) throw new Error('插件已安装，但工作流暂时无法读取')
         draftCapabilities = [
           { type: 'skill', id: skill.id, name: skill.name },
           ...draftCapabilities.filter(item => item.type !== 'skill'),
@@ -1244,6 +1248,7 @@ export function mountWorkbench(app: HTMLDivElement): void {
   function setConversationMode(active: boolean) {
     mainScroll.classList.toggle('conversation-mode', active)
     app.querySelector('#composer-start-context')?.setAttribute('aria-hidden', String(active))
+    syncComposerMenuPlacement()
     resizeTaskInput()
   }
 
@@ -1254,6 +1259,8 @@ export function mountWorkbench(app: HTMLDivElement): void {
     const nextHeight = Math.min(maximumHeight, Math.max(minimumHeight, taskInput.scrollHeight))
     taskInput.style.height = `${nextHeight}px`
     taskInput.style.overflowY = taskInput.scrollHeight > maximumHeight ? 'auto' : 'hidden'
+    syncComposerMenuPlacement()
+    settingsCenter?.repositionComposerPicker()
   }
 
   function cancelTranscriptScroll() {
@@ -2096,10 +2103,14 @@ export function mountWorkbench(app: HTMLDivElement): void {
       platform: snapshot.platform,
       query: workspaceTaskQuery,
     })
-    for (const group of groups) {
-      if (group.containsCurrent && !Object.hasOwn(workspaceGroupExpansion, group.key)) {
-        workspaceGroupExpansion[group.key] = true
-      }
+    const preferredWorkspaceTaskGroupKey = groups.find(group => group.containsCurrent)?.key
+      || groups.find(group => group.key !== UNGROUPED_WORKSPACE_KEY)?.key
+      || groups[0]?.key
+      || ''
+    if (preferredWorkspaceTaskGroupKey && preferredWorkspaceTaskGroupKey !== currentWorkspaceTaskGroupKey) {
+      workspaceGroupExpansion = Object.fromEntries(groups.map(group => [group.key, group.key === preferredWorkspaceTaskGroupKey]))
+      expandedWorkspaceTaskGroups.clear()
+      currentWorkspaceTaskGroupKey = preferredWorkspaceTaskGroupKey
     }
     const listSignature = JSON.stringify({
       current: snapshot.conversation.id,
@@ -2246,6 +2257,7 @@ export function mountWorkbench(app: HTMLDivElement): void {
             renderDraftTray()
             selectedChange = null
             applySnapshot(result.snapshot)
+            showMainView('workbench')
             taskInput.focus()
           } catch (error) {
             showToast(errorMessage(error))
@@ -3637,11 +3649,11 @@ export function mountWorkbench(app: HTMLDivElement): void {
     const preferredCapability = draftCapabilities.find(capability => capability.type === 'mcp' && capability.id === 'computer')
       || draftCapabilities[0]
     const capabilityLabel = app.querySelector<HTMLElement>('#capability-name')!
-    capabilityLabel.textContent = preferredCapability?.name || '能力包'
+    capabilityLabel.textContent = preferredCapability?.name || '插件'
     const capabilityNames = draftCapabilities.map(capability => capability.name).join('、')
     const capabilityTitle = draftCapabilities.length > 0
       ? `${capabilityNames} · 本轮优先使用，点击管理`
-      : '选择本轮优先使用的能力包；未选择的能力仍然可用'
+      : '选择本轮优先使用的插件；未选择的插件和 Skills 仍然可用'
     capabilityTab.title = capabilityTitle
     capabilityTab.setAttribute('aria-label', capabilityTitle)
     const capabilityCount = app.querySelector<HTMLElement>('#capability-count')!
@@ -4161,6 +4173,21 @@ export function mountWorkbench(app: HTMLDivElement): void {
     approvalPill.setAttribute('aria-expanded', 'false')
   }
 
+  function syncComposerMenuPlacement() {
+    const placement = composerPopoverPlacement(mainScroll.classList.contains('conversation-mode'))
+    const cardRect = composerCard.getBoundingClientRect()
+    composerCard.parentElement?.style.setProperty('--composer-menu-anchor-offset', `${composerCard.offsetHeight}px`)
+    const availableHeight = cardRect
+      ? placement === 'below'
+        ? window.innerHeight - cardRect.bottom - 14
+        : cardRect.top - 14
+      : window.innerHeight - 150
+    for (const menu of [composerMenu, capabilityMenu, approvalMenu]) {
+      menu.dataset.placement = placement
+      menu.style.setProperty('--composer-menu-max-height', `${Math.max(96, availableHeight)}px`)
+    }
+  }
+
   function createComposerMenuRow(options: {
     glyph: string
     title: string
@@ -4260,25 +4287,25 @@ export function mountWorkbench(app: HTMLDivElement): void {
   function renderCapabilityMenu() {
     capabilityMenu.replaceChildren()
     capabilityMenu.setAttribute('role', 'menu')
-    const workPackSection = appendComposerMenuSection('能力包', capabilityMenu)
+    const pluginSection = appendComposerMenuSection('插件', capabilityMenu)
     const loading = document.createElement('p')
     loading.className = 'composer-menu-empty'
-    loading.textContent = '正在读取能力包…'
-    workPackSection.append(loading)
+    loading.textContent = '正在读取插件…'
+    pluginSection.append(loading)
 
     if (!bridge) {
-      loading.textContent = '能力包仅在桌面端可用'
+      loading.textContent = '插件仅在桌面端可用'
       return
     }
 
-    void Promise.all([bridge.listWorkPacks(), bridge.getSettings(false)]).then(([catalog, settings]) => {
+    void Promise.all([bridge.listPlugins(), bridge.getSettings(false)]).then(([registry, settings]) => {
       if (!capabilityMenu.classList.contains('visible')) return
       loading.remove()
       let rowCount = 0
       const projectedCapabilityKeys = new Set<string>()
       const appendCapability = (capability: AgentCapabilityReference, title: string, detail: string, glyph: string, disabled = false) => {
         const selected = draftCapabilities.some(item => item.type === capability.type && item.id === capability.id)
-        workPackSection.append(createComposerMenuRow({
+        pluginSection.append(createComposerMenuRow({
           glyph,
           title,
           detail: selected ? '已作为本轮重点，点击取消强调' : detail,
@@ -4298,19 +4325,25 @@ export function mountWorkbench(app: HTMLDivElement): void {
         rowCount += 1
       }
 
-      for (const entry of catalog.installed) {
-        if (!entry.enabled || !entry.emphasis) continue
-        const capability = entry.emphasis
+      for (const plugin of registry.plugins) {
+        if (!plugin.enabled || plugin.state !== 'enabled') continue
+        const skill = plugin.manifest.contributes?.skills?.[0]
+        const capability: AgentCapabilityReference | undefined = skill
+          ? { type: 'skill', id: skill.id, name: plugin.manifest.name }
+          : plugin.serverName
+            ? { type: 'mcp', id: plugin.serverName, name: plugin.manifest.name }
+            : undefined
+        if (!capability) continue
         projectedCapabilityKeys.add(`${capability.type}:${capability.id}`)
         const included = [
-          entry.contributions.skills ? `${entry.contributions.skills} 个工作流` : '',
-          entry.contributions.tools ? `${entry.contributions.tools} 个工具` : '',
-          entry.contributions.commands ? `${entry.contributions.commands} 个命令` : '',
+          plugin.manifest.contributes?.skills?.length ? `${plugin.manifest.contributes.skills.length} 个 Skills` : '',
+          plugin.manifest.contributes?.tools?.length ? `${plugin.manifest.contributes.tools.length} 个工具` : '',
+          plugin.manifest.contributes?.commands?.length ? `${plugin.manifest.contributes.commands.length} 个命令` : '',
         ].filter(Boolean).join(' · ')
         appendCapability(
           capability,
-          entry.name,
-          `${entry.kind === 'workflow' ? '工作流' : entry.kind === 'integration' ? '集成' : '混合包'}${included ? ` · ${included}` : ''} · 始终可用`,
+          plugin.manifest.name,
+          `插件${included ? ` · ${included}` : ''} · 始终可用`,
           capability.type === 'skill' ? icon('spark') : icon('plug'),
         )
       }
@@ -4331,8 +4364,8 @@ export function mountWorkbench(app: HTMLDivElement): void {
       if (rowCount === 0) {
         const empty = document.createElement('p')
         empty.className = 'composer-menu-empty'
-        empty.textContent = '还没有可用的能力包'
-        workPackSection.append(empty)
+        empty.textContent = '还没有可用的插件'
+        pluginSection.append(empty)
       }
     }).catch(error => {
       loading.textContent = errorMessage(error)
@@ -4344,6 +4377,7 @@ export function mountWorkbench(app: HTMLDivElement): void {
     const opening = !composerMenu.classList.contains('visible')
     closeComposerMenus()
     if (!opening) return
+    syncComposerMenuPlacement()
     renderComposerMenu()
     composerMenu.classList.add('visible')
     composerMenu.setAttribute('aria-hidden', 'false')
@@ -4354,6 +4388,7 @@ export function mountWorkbench(app: HTMLDivElement): void {
     const opening = !capabilityMenu.classList.contains('visible')
     closeComposerMenus()
     if (!opening) return
+    syncComposerMenuPlacement()
     renderCapabilityMenu()
     capabilityMenu.classList.add('visible')
     capabilityMenu.setAttribute('aria-hidden', 'false')
@@ -4393,15 +4428,21 @@ export function mountWorkbench(app: HTMLDivElement): void {
     label.textContent = '审批策略'
     approvalMenu.append(label)
     const names: Record<ApprovalPolicy, string> = { ask: '每次询问', agent: '低风险自动', full: '完全访问' }
+    const glyphs: Record<ApprovalPolicy, string> = {
+      ask: icon('approvalAsk'),
+      agent: icon('approvalAgent'),
+      full: icon('approvalFull'),
+    }
     for (const policy of ['ask', 'agent', 'full'] as ApprovalPolicy[]) {
       approvalMenu.append(createComposerMenuRow({
-        glyph: '<span class="approval-option-icon">♢</span>',
+        glyph: glyphs[policy],
         title: names[policy],
         detail: approvalDescription(policy),
         selected: currentSnapshot.runtime.approvalPolicy === policy,
         onClick: () => void selectApprovalPolicy(policy),
       }))
     }
+    syncComposerMenuPlacement()
     approvalMenu.classList.add('visible')
     approvalMenu.setAttribute('aria-hidden', 'false')
     approvalPill.setAttribute('aria-expanded', 'true')
@@ -4563,6 +4604,7 @@ export function mountWorkbench(app: HTMLDivElement): void {
       const result = await bridge.switchConversation(id)
       selectedChange = null
       applySnapshot(result.snapshot)
+      showMainView('workbench')
     } catch (error) {
       showToast(errorMessage(error))
     } finally {
@@ -4595,29 +4637,6 @@ export function mountWorkbench(app: HTMLDivElement): void {
     })
   })
 
-  const workspaceTaskSearch = app.querySelector<HTMLElement>('#workspace-task-search')!
-  const workspaceTaskSearchInput = app.querySelector<HTMLInputElement>('#workspace-task-search-input')!
-  app.querySelector('#workspace-task-search-toggle')?.addEventListener('click', () => {
-    workspaceTaskSearch.hidden = false
-    workspaceTaskSearchInput.focus()
-  })
-  workspaceTaskSearchInput.addEventListener('input', () => {
-    workspaceTaskQuery = workspaceTaskSearchInput.value
-    renderedConversationListSignature = ''
-    if (currentSnapshot) renderConversationList(currentSnapshot)
-  })
-  app.querySelector('#workspace-task-search-close')?.addEventListener('click', () => {
-    workspaceTaskQuery = ''
-    workspaceTaskSearchInput.value = ''
-    workspaceTaskSearch.hidden = true
-    renderedConversationListSignature = ''
-    if (currentSnapshot) renderConversationList(currentSnapshot)
-  })
-  app.querySelector('#workspace-task-manage')?.addEventListener('click', () => {
-    app.querySelectorAll('.sidebar-nav-item').forEach(item => item.classList.remove('active'))
-    app.querySelector<HTMLButtonElement>('.sidebar-nav-item[data-view="projects"]')?.classList.add('active')
-    showMainView('projects')
-  })
   app.querySelector('#workspace-task-add')?.addEventListener('click', async () => {
     if (!bridge) return
     try {
@@ -4645,6 +4664,7 @@ export function mountWorkbench(app: HTMLDivElement): void {
       renderDraftTray()
       selectedChange = null
       applySnapshot(result.snapshot)
+      showMainView('workbench')
       taskInput.focus()
     } catch (error) {
       showToast(errorMessage(error))
@@ -4662,12 +4682,12 @@ export function mountWorkbench(app: HTMLDivElement): void {
   app.querySelector('#model-pill')?.addEventListener('click', event => void settingsCenter?.openModelPicker(event.currentTarget as HTMLElement))
   app.querySelector('#reasoning-tab')?.addEventListener('click', event => void settingsCenter?.openReasoningPicker(event.currentTarget as HTMLElement))
   app.querySelector('#inspector-toggle')?.addEventListener('click', () => shell.classList.contains('inspector-open') ? closeInspector() : openInspector('overview'))
+  app.querySelector('#inspector-close')?.addEventListener('click', () => closeInspector())
   app.querySelector('#inspector-overview-back')?.addEventListener('click', () => {
     selectedChange = null
     selectedArtifactId = null
     openInspector('overview')
   })
-  app.querySelector('#inspector-close')?.addEventListener('click', () => closeInspector())
   app.querySelector('#inspector-scrim')?.addEventListener('click', () => closeInspector())
   browserToggle?.addEventListener('click', () => {
     if (!browserSnapshot?.visible) void openBrowser()
@@ -4745,6 +4765,8 @@ export function mountWorkbench(app: HTMLDivElement): void {
   })
   window.addEventListener('resize', () => {
     if (shell.classList.contains('inspector-open')) setInspectorWidth(inspectorPanel.getBoundingClientRect().width)
+    syncComposerMenuPlacement()
+    settingsCenter?.repositionComposerPicker()
   })
   new ResizeObserver(() => scheduleBrowserBoundsSync()).observe(browserSurface)
   new ResizeObserver(() => scheduleBrowserBoundsSync()).observe(inspectorPanel)

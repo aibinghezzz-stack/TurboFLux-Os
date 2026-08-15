@@ -1,4 +1,6 @@
 export { ConversationManager } from './manager'
+export { ConversationCatalog } from './conversationCatalog'
+export type { ConversationCatalogDiagnostics } from './conversationCatalog'
 export type {
   ConversationManagerOptions,
   ConversationPersistenceHealth,

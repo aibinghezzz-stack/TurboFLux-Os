@@ -38,6 +38,49 @@ export interface ComputerOverlayPresentation {
   approval?: Omit<ComputerOverlayApproval, 'options'> & { options: ComputerOverlayApprovalOption[] }
 }
 
+interface RuntimeEventLike {
+  type?: string
+  conversationId?: string
+  snapshot?: { conversation?: { id?: string } }
+  event?: { type?: string }
+}
+
+export type ComputerOverlayRuntimeAction =
+  | { kind: 'activate'; conversationId: string; snapshot: NonNullable<RuntimeEventLike['snapshot']> }
+  | { kind: 'sync'; conversationId: string }
+  | { kind: 'none'; conversationId: string | null }
+
+export interface ComputerOverlayRuntimeClassification {
+  action: ComputerOverlayRuntimeAction
+  taskFinished: boolean
+}
+
+export function classifyComputerOverlayRuntimeEvent(
+  event: RuntimeEventLike | null | undefined,
+  activeConversationId: string | null,
+): ComputerOverlayRuntimeClassification {
+  const conversationId = event?.conversationId
+    || event?.snapshot?.conversation?.id
+    || activeConversationId
+  const taskFinished = event?.type === 'runtime-error'
+    || event?.type === 'conversation-run'
+    || (event?.type === 'agent' && ['session:complete', 'error'].includes(event.event?.type || ''))
+  if (event?.type === 'snapshot' && event.snapshot?.conversation?.id) {
+    return {
+      taskFinished,
+      action: {
+        kind: 'activate',
+        conversationId: event.snapshot.conversation.id,
+        snapshot: event.snapshot,
+      },
+    }
+  }
+  if (taskFinished && conversationId && conversationId === activeConversationId) {
+    return { taskFinished, action: { kind: 'sync', conversationId } }
+  }
+  return { taskFinished, action: { kind: 'none', conversationId: conversationId || null } }
+}
+
 export function computerOverlayApprovalOptions(options: string[]): ComputerOverlayApprovalOption[] {
   const source = options.length > 0 ? options : ['allow-once', 'deny']
   return source.slice(0, 4).map(value => ({
@@ -241,6 +284,7 @@ export class ComputerActivityOverlay {
   private captureSuspended = false
   private wantedVisible = false
   private pendingApproval: ComputerOverlayApproval | null = null
+  private lastRenderKey: string | null = null
 
   constructor(private readonly mainWindow: BrowserWindow) {
     this.createWindow()
@@ -261,19 +305,9 @@ export class ComputerActivityOverlay {
     this.render()
   }
 
-  refresh(snapshot: ComputerSystemSnapshot): void {
-    this.latestSnapshot = snapshot
-    this.render()
-  }
-
   sync(snapshot: ComputerSystemSnapshot, pendingApproval: ComputerOverlayApproval | null): void {
     this.latestSnapshot = snapshot
     this.pendingApproval = pendingApproval
-    this.render()
-  }
-
-  setPendingApproval(approval: ComputerOverlayApproval | null): void {
-    this.pendingApproval = approval
     this.render()
   }
 
@@ -352,10 +386,21 @@ export class ComputerActivityOverlay {
     const presentation = computerOverlayPresentation(snapshot, this.lastActivity, Date.now() < this.errorUntil, this.pendingApproval)
     this.wantedVisible = Boolean(presentation && !this.mainWindow.isFocused())
     if (!presentation || !this.wantedVisible) {
+      const renderKey = presentation ? 'hidden:workbench-focused' : 'hidden:inactive'
+      if (renderKey === this.lastRenderKey) return
+      this.lastRenderKey = renderKey
       if (overlay.isVisible()) overlay.hide()
       return
     }
     const targetBounds = snapshot.activeWindow?.bounds
+    const renderKey = JSON.stringify({
+      presentation,
+      targetBounds: targetBounds || null,
+      ready: this.ready,
+      captureSuspended: this.captureSuspended,
+    })
+    if (renderKey === this.lastRenderKey) return
+    this.lastRenderKey = renderKey
     const display = targetBounds
       ? screen.getDisplayMatching(targetBounds)
       : screen.getDisplayNearestPoint(screen.getCursorScreenPoint())

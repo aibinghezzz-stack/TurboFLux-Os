@@ -21,8 +21,26 @@ export interface BrowserActivitySnapshot {
   phase: BrowserActivityPhase
   operation?: string
   tabId?: string
+  runId?: string
+  toolCallId?: string
+  itemId?: string
   description: string
   startedAt: number
+}
+
+export interface BrowserExecutionSnapshot {
+  conversationId: string
+  runId?: string
+  toolCallId: string
+  itemId: string
+  operation: string
+  phase: BrowserActivityPhase
+  status: 'running' | 'completed' | 'failed' | 'cancelled'
+  tabId?: string
+  title?: string
+  url?: string
+  startedAt: number
+  updatedAt: number
 }
 
 export interface BrowserDownloadSnapshot {
@@ -46,10 +64,12 @@ export interface BrowserErrorSnapshot {
 }
 
 export interface BrowserSystemSnapshot {
+  conversationId: string
   visible: boolean
   activeTabId: string | null
   tabs: BrowserTabSnapshot[]
   activity?: BrowserActivitySnapshot
+  executions: BrowserExecutionSnapshot[]
   downloads: BrowserDownloadSnapshot[]
   lastError?: BrowserErrorSnapshot
 }

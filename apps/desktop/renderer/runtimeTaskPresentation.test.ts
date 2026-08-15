@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { RuntimeTask } from '@turboflux/agent-core/contracts'
-import { describeRuntimeTask, normalizeRuntimePreviewUrl } from './runtimeTaskPresentation'
+import { describeRuntimeTask, normalizeRuntimePreviewUrl, runtimeTaskStatusLabel } from './runtimeTaskPresentation'
 
 function task(overrides: Partial<RuntimeTask> = {}): RuntimeTask {
   return {
@@ -44,5 +44,6 @@ describe('runtime task presentation', () => {
       status: 'completed',
       presentation: { kind: 'check', title: '验证应用质量' },
     }))).toMatchObject({ detail: '已完成', active: false })
+    expect(runtimeTaskStatusLabel('orphaned')).toBe('等待恢复')
   })
 })

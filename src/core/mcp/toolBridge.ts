@@ -1,6 +1,6 @@
 import type { AgentAttachment, AgentTool, ToolParameter } from '../../shared/agentTypes'
 import type { McpClient } from './client'
-import type { McpToolInfo } from './types'
+import type { McpToolCallOptions, McpToolInfo } from './types'
 import { validateSchemaValue } from '../schemaValidation'
 
 export function mcpToolToAgentTool(tool: McpToolInfo): AgentTool {
@@ -78,7 +78,7 @@ export async function executeMcpTool(
   mcpClient: McpClient,
   toolName: string,
   args: Record<string, unknown>,
-  options?: { signal?: AbortSignal },
+  options?: McpToolCallOptions,
 ): Promise<{ output: string; isError: boolean; attachments?: AgentAttachment[] }> {
   const parsed = parseMcpToolName(toolName)
   if (!parsed) return { output: `Invalid MCP tool name: ${toolName}`, isError: true }

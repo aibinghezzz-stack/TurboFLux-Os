@@ -170,5 +170,3 @@ declare global {
     turbofluxDesktop?: TurboFluxDesktopBridge
   }
 }
-
-export {}

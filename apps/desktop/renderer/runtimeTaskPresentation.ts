@@ -21,6 +21,10 @@ const STATUS_LABELS: Record<RuntimeTaskStatus, string> = {
   orphaned: '等待恢复',
 }
 
+export function runtimeTaskStatusLabel(status: RuntimeTaskStatus): string {
+  return STATUS_LABELS[status]
+}
+
 export function normalizeRuntimePreviewUrl(value: string): string | undefined {
   try {
     const parsed = new URL(value.trim())
@@ -40,7 +44,7 @@ export function describeRuntimeTask(task: RuntimeTask): RuntimeTaskViewModel | n
   return {
     category: presentation.kind,
     title: presentation.title.trim(),
-    detail: presentation.detail?.trim() || STATUS_LABELS[task.status],
+    detail: presentation.detail?.trim() || runtimeTaskStatusLabel(task.status),
     previewUrl: presentation.previewUrl ? normalizeRuntimePreviewUrl(presentation.previewUrl) : undefined,
     active: ACTIVE_STATUSES.has(task.status),
   }

@@ -110,4 +110,21 @@ describe('MCP tool bridge', () => {
     await expect(executeMcpTool(client, 'files__replace', { edit: { path: 'a.ts' } })).resolves.toEqual({ output: 'done', isError: false })
     expect(callTool).toHaveBeenCalledWith('files', 'replace', { edit: { path: 'a.ts' } })
   })
+
+  it('preserves local execution identity when dispatching a namespaced tool', async () => {
+    const callTool = vi.fn(async () => ({ content: 'done', isError: false }))
+    const client = { callTool } as unknown as McpClient
+    const options = {
+      execution: {
+        conversationId: 'conversation-1',
+        runId: 'run-1',
+        toolCallId: 'tool-1',
+        itemId: 'tool-1',
+      },
+    }
+
+    await executeMcpTool(client, 'browser__open', { url: 'https://example.test' }, options)
+
+    expect(callTool).toHaveBeenCalledWith('browser', 'open', { url: 'https://example.test' }, options)
+  })
 })

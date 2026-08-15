@@ -45,10 +45,22 @@ export interface McpLocalToolResult {
   attachments?: AgentAttachment[]
 }
 
+export interface McpToolExecutionContext {
+  conversationId?: string
+  runId?: string
+  toolCallId: string
+  itemId: string
+}
+
+export interface McpToolCallOptions {
+  signal?: AbortSignal
+  execution?: McpToolExecutionContext
+}
+
 export interface McpLocalServerDefinition {
   name: string
   instructions?: string
   tools: McpLocalToolDefinition[]
   requiresSelection?: boolean
-  handler(toolName: string, args: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<unknown>
+  handler(toolName: string, args: Record<string, unknown>, options?: McpToolCallOptions): Promise<unknown>
 }

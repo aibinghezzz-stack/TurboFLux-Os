@@ -42,7 +42,7 @@ describe('PluginService', () => {
     expect(readFileSync(skillPath, 'utf8')).toContain('name: review')
     await service.setEnabled('example.workflow', false)
     expect(() => readFileSync(skillPath, 'utf8')).toThrow()
-    expect(new PluginService(store, pluginsRoot, workspace).list().plugins[0].enabled).toBe(false)
+    expect(new PluginService(store, pluginsRoot, workspace).list().plugins.find(plugin => plugin.id === 'example.workflow')?.enabled).toBe(false)
   })
 
   it('rejects traversal entries and unapproved permissions', async () => {
@@ -57,13 +57,39 @@ describe('PluginService', () => {
     await expect(service.installFromDirectory(source, [])).rejects.toThrow('must be approved')
   })
 
-  it('does not bundle product marketplace content into the open-source core', async () => {
+  it('installs and enables the bundled local office plugin on first initialization', async () => {
     const root = mkdtempSync(join(tmpdir(), 'turboflux-plugin-'))
     directories.push(root)
     const workspace = join(root, 'workspace')
     mkdirSync(workspace)
     const service = new PluginService(join(root, 'plugins.json'), join(root, 'plugins'), workspace)
-    await expect(service.installMarketplace('turboflux-office-workagent')).rejects.toThrow('Marketplace plugin not found')
-    expect(service.list().marketplace).toEqual([])
+    await service.initialize(new McpClient())
+
+    const plugin = service.list().plugins.find(candidate => candidate.id === 'turboflux.office-workagent')
+    expect(plugin).toMatchObject({ source: 'bundled', enabled: true, state: 'enabled' })
+    expect(plugin?.manifest.contributes?.skills).toHaveLength(7)
+    expect(readFileSync(join(workspace, '.turboflux', 'skills', 'plugin-20b9f19062-office-workagent', 'SKILL.md'), 'utf8')).toContain('办公任务总控')
+    await expect(service.uninstall('turboflux.office-workagent')).rejects.toThrow('Bundled plugins cannot be uninstalled')
+  })
+
+  it('adopts an existing office installation without overriding its disabled state', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'turboflux-plugin-'))
+    directories.push(root)
+    const workspace = join(root, 'workspace')
+    mkdirSync(workspace)
+    const store = join(root, 'plugins.json')
+    const pluginsRoot = join(root, 'plugins')
+    const service = new PluginService(store, pluginsRoot, workspace)
+    await service.initialize(new McpClient())
+    await service.setEnabled('turboflux.office-workagent', false)
+
+    const restored = new PluginService(store, pluginsRoot, workspace)
+    await restored.initialize(new McpClient())
+
+    expect(restored.list().plugins.find(candidate => candidate.id === 'turboflux.office-workagent')).toMatchObject({
+      source: 'bundled',
+      enabled: false,
+      state: 'disabled',
+    })
   })
 })

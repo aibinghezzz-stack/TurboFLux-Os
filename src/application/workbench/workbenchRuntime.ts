@@ -33,8 +33,18 @@ import {
   type AgentTurn,
   type ApprovalPolicy,
 } from '../../shared/agentTypes'
-import { ConversationManager, type ConversationQueuedInput } from '../conversations/index'
-import { deleteConversationAsync, listConversations, loadConversationAsync, sameWorkspacePath, saveConversation } from '../conversations/store'
+import {
+  ConversationCatalog,
+  ConversationManager,
+  type ConversationMeta,
+  type ConversationQueuedInput,
+} from '../conversations/index'
+import {
+  deleteConversationAsync,
+  getConversationsDir,
+  sameWorkspacePath,
+  updateConversationMetadata,
+} from '../conversations/store'
 import { WorkSession } from '../work/index'
 import { ProjectService } from '../projects/projectService'
 import {
@@ -344,6 +354,7 @@ export class WorkbenchRuntime {
   private readonly listeners = new Set<WorkbenchEventListener>()
   private workbenchStreamTraceActive = false
   private readonly workbenchStreamTraceStages = new Map<string, number[]>()
+  private readonly conversationCatalog: ConversationCatalog
   private readonly conversationRuntimes = new Map<string, WorkbenchConversationRuntime>()
   private activeConversationId = ''
   private platformInitialized = false
@@ -360,6 +371,7 @@ export class WorkbenchRuntime {
     this.automations = new AutomationService(join(storagePath, 'automations.json'))
     this.artifacts = new ArtifactService(join(storagePath, 'artifacts.json'))
     this.plugins = new PluginService(join(storagePath, 'plugins.json'), join(storagePath, 'plugins'), options.workspacePath, () => this.emitSnapshot())
+    this.conversationCatalog = new ConversationCatalog(getConversationsDir())
     this.projects.recordOpened(options.workspacePath)
     const initial = this.createConversationRuntime(undefined, workspaceName)
     this.conversationRuntimes.set(initial.id, initial)
@@ -415,6 +427,16 @@ export class WorkbenchRuntime {
     this.activeConversationRuntime.currentRecovery = value
   }
 
+  private syncConversationCatalogRuntime(slot: WorkbenchConversationRuntime): ConversationMeta {
+    const meta = slot.conversations.getCatalogMeta(slot.updatedAt)
+    this.conversationCatalog.upsert(meta, slot.conversations.hasCatalogContent())
+    return meta
+  }
+
+  private syncConversationCatalogFromRuntimes(): void {
+    for (const slot of this.conversationRuntimes.values()) this.syncConversationCatalogRuntime(slot)
+  }
+
   getSnapshot(): WorkbenchSnapshot {
     const pending = this.runtime.engine.getPendingInteractiveRequests()
     const pendingRequests = [pending.active, ...pending.queued]
@@ -427,27 +449,9 @@ export class WorkbenchRuntime {
     const ownerSessionId = this.runtime.sessionRegistry.getCurrentId()
     const fullConversationTurns = this.runtime.engine.getFullConversationTurns()
     const currentConversationId = this.conversations.getCurrentId()
-    const conversationCatalog = this.conversations.listAll()
+    this.syncConversationCatalogFromRuntimes()
+    const conversationCatalog = this.conversationCatalog.listAll()
     const conversations = conversationCatalog.filter(conversation => sameWorkspacePath(conversation.workspacePath, this.options.workspacePath))
-    for (const slot of this.conversationRuntimes.values()) {
-      if (conversations.some(conversation => conversation.id === slot.id)) continue
-      const turns = slot.runtime.engine.getFullConversationTurns()
-      const meta = {
-        id: slot.id,
-        title: turns.find(turn => turn.role === 'user')?.content.trim().slice(0, 72) || '未命名任务',
-        workspacePath: this.options.workspacePath,
-        createdAt: turns[0]?.timestamp || slot.updatedAt,
-        updatedAt: slot.updatedAt,
-        mode: slot.runtime.engine.getMode(),
-        model: this.options.config.model,
-        provider: this.options.config.provider,
-        turnCount: turns.length,
-      }
-      conversations.push(meta)
-      if (!conversationCatalog.some(conversation => conversation.id === slot.id)) conversationCatalog.push(meta)
-    }
-    conversations.sort((left, right) => right.updatedAt - left.updatedAt)
-    conversationCatalog.sort((left, right) => right.updatedAt - left.updatedAt)
     const artifacts = this.artifacts.list(this.options.workspacePath)
     const persistence = this.conversations.getPersistenceHealth()
     const runtimeSummary: WorkbenchSnapshot['runtime'] = {
@@ -741,7 +745,7 @@ export class WorkbenchRuntime {
           try {
             await this.stopConversationRun(slot, '停止编辑后的任务超时，无法安全回滚消息。')
           } catch (stopError) {
-            throw new AggregateError([error, stopError], 'Edited message could not be rolled back safely')
+            throw new AggregateError([error, stopError], 'Edited message could not be rolled back safely', { cause: stopError })
           }
         }
         if (this.destroyed || slot.destroying) throw error
@@ -860,8 +864,12 @@ export class WorkbenchRuntime {
   }
 
   async initializePlatform(): Promise<void> {
-    await Promise.all([...this.conversationRuntimes.values()].map(runtime => this.initializeConversationRuntime(runtime)))
+    await Promise.all([
+      this.conversationCatalog.initialize(),
+      ...[...this.conversationRuntimes.values()].map(runtime => this.initializeConversationRuntime(runtime)),
+    ])
     this.platformInitialized = true
+    this.syncConversationCatalogFromRuntimes()
     for (const slot of this.conversationRuntimes.values()) this.startNextQueuedPromptIfIdle(slot)
     this.scheduleAutomationWake(100)
     this.emitSnapshot()
@@ -1001,6 +1009,7 @@ export class WorkbenchRuntime {
       throw new Error(`Conversation not found in this workspace: ${id}`)
     }
     runtime.currentRecovery = conversation.recovery ? { ...conversation.recovery } : undefined
+    runtime.updatedAt = conversation.updatedAt
     if (conversation.canonicalEvents?.length) runtime.work.replaceFromEvents(conversation.canonicalEvents)
     else {
       runtime.work.replaceFromTurns(conversation.turns)
@@ -1008,6 +1017,7 @@ export class WorkbenchRuntime {
     }
     this.restorePersistedQueue(runtime)
     this.conversationRuntimes.set(id, runtime)
+    this.syncConversationCatalogRuntime(runtime)
     if (this.platformInitialized) await this.initializeConversationRuntime(runtime)
     this.activeConversationId = id
     this.startNextQueuedPromptIfIdle(runtime)
@@ -1037,30 +1047,33 @@ export class WorkbenchRuntime {
       }
       await this.destroyConversationRuntime(target)
     }
-    const indexed = listConversations().find(conversation => conversation.id === id)
-    const deleted = indexed && !sameWorkspacePath(indexed.workspacePath, this.options.workspacePath)
-      ? await deleteConversationAsync(id)
-      : await this.conversations.deleteAsync(id)
-    if (deleted) this.emitSnapshot()
-    return deleted
+    const deleted = await deleteConversationAsync(id)
+    if (deleted || target) {
+      this.conversationCatalog.remove(id)
+      this.emitSnapshot()
+    }
+    return deleted || Boolean(target)
   }
 
   async renameConversation(id: string, title: string, source: 'custom' | 'generated' = 'custom'): Promise<boolean> {
     this.assertAvailable()
-    const indexed = listConversations().find(conversation => conversation.id === id)
+    const indexed = this.conversationCatalog.get(id)
+    const target = this.conversationRuntimes.get(id)
     let renamed = false
-    if (indexed && !sameWorkspacePath(indexed.workspacePath, this.options.workspacePath)) {
-      const requestedTitle = title.trim().replace(/\s+/g, ' ').slice(0, 80)
-      const conversation = requestedTitle ? await loadConversationAsync(id) : null
-      if (conversation) {
-        conversation.title = requestedTitle
-        conversation.titleSource = source
-        conversation.updatedAt = Date.now()
-        saveConversation(conversation, { compact: true })
-        renamed = true
+    if (target) {
+      renamed = await target.conversations.renameAsync(id, title, source)
+      if (renamed) {
+        target.updatedAt = Date.now()
+        this.syncConversationCatalogRuntime(target)
       }
-    } else {
-      renamed = await this.conversations.renameAsync(id, title, source)
+    } else if (indexed) {
+      const requestedTitle = title.trim().replace(/\s+/g, ' ').slice(0, 80)
+      const updatedAt = Date.now()
+      if (requestedTitle) {
+        const next = { ...indexed, title: requestedTitle, titleSource: source, updatedAt }
+        renamed = updateConversationMetadata(next)
+        if (renamed) this.conversationCatalog.upsert(next)
+      }
     }
     if (renamed) this.emitSnapshot()
     return renamed
@@ -1470,6 +1483,7 @@ export class WorkbenchRuntime {
 
   async destroy(): Promise<void> {
     if (this.destroyed) return
+    this.syncConversationCatalogFromRuntimes()
     this.destroyed = true
     if (this.automationTimer) clearTimeout(this.automationTimer)
     this.automationTimer = null
@@ -1483,6 +1497,7 @@ export class WorkbenchRuntime {
     ).catch(() => undefined)
     await Promise.all([...this.conversationRuntimes.values()].map(runtime => this.destroyConversationRuntime(runtime)))
     this.conversationRuntimes.clear()
+    await this.conversationCatalog.flush()
   }
 
   private startPrompt(

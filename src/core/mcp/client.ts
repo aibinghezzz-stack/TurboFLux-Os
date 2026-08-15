@@ -3,7 +3,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import type { AgentAttachment } from '../../shared/agentTypes'
-import type { McpLocalServerDefinition, McpLocalToolResult, McpServerConfig, McpToolInfo } from './types'
+import type { McpLocalServerDefinition, McpLocalToolResult, McpServerConfig, McpToolCallOptions, McpToolInfo } from './types'
 
 const INHERITED_ENV_ALLOWLIST = new Set([
   'PATH',
@@ -175,7 +175,7 @@ export class McpClient {
     }
   }
 
-  async callTool(serverName: string, toolName: string, args: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<{ content: string; isError: boolean; attachments?: AgentAttachment[] }> {
+  async callTool(serverName: string, toolName: string, args: Record<string, unknown>, options?: McpToolCallOptions): Promise<{ content: string; isError: boolean; attachments?: AgentAttachment[] }> {
     const conn = this.connections.get(serverName)
     if (!conn || conn.status !== 'connected') {
       return { content: `MCP server "${serverName}" is not connected`, isError: true }

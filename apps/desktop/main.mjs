@@ -14,7 +14,7 @@ const rendererEntryPath = app.isPackaged
   ? join(process.resourcesPath, 'renderer', 'index.html')
   : join(repositoryRoot, 'dist-desktop', 'renderer', 'index.html')
 const productIconPath = app.isPackaged
-  ? join(process.resourcesPath, 'renderer', 'assets', 'turboflux-mark-VUo_7eDU.png')
+  ? join(process.resourcesPath, 'renderer', 'turboflux-app-icon.png')
   : join(repositoryRoot, 'apps', 'website', 'public', 'turboflux-app-icon.png')
 
 app.setName('TurboFlux')
@@ -82,7 +82,7 @@ electronIpcMain.handle('desktop:computer-overlay-action', async (event, action, 
 const { DesktopRuntimeHost } = await tsImport('./runtimeHost.ts', import.meta.url)
 const { BrowserSystem } = await tsImport('./browser/browserSystem.ts', import.meta.url)
 const { ComputerSystem } = await tsImport('./computer/computerSystem.ts', import.meta.url)
-const { ComputerActivityOverlay } = await tsImport('./computer/computerActivityOverlay.ts', import.meta.url)
+const { ComputerActivityOverlay, classifyComputerOverlayRuntimeEvent } = await tsImport('./computer/computerActivityOverlay.ts', import.meta.url)
 
 
 async function getInstallationId() {
@@ -171,27 +171,18 @@ function syncComputerActivityOverlay(snapshot = runtimeHost?.getSnapshot()) {
 }
 
 function handleRuntimeEvent(event) {
-  const conversationId = event?.conversationId
-    || event?.snapshot?.conversation?.id
-    || activeConversationId
-  const taskFinished = event?.type === 'runtime-error'
-    || event?.type === 'conversation-run'
-    || (event?.type === 'agent' && ['session:complete', 'error'].includes(event.event?.type))
+  const classification = classifyComputerOverlayRuntimeEvent(event, activeConversationId)
+  const conversationId = classification.action.conversationId
+  const taskFinished = classification.taskFinished
   if (taskFinished && conversationId) {
     const browser = browserSystems.get(conversationId)
     const computer = computerSystems.get(conversationId)
     if (browser) void browser.finishTask().catch(error => console.error('Failed to clear Browser task data:', error))
     if (computer) void computer.finishTask().catch(error => console.error('Failed to clear Computer task data:', error))
   }
-  if (event?.type === 'snapshot' && event.snapshot?.conversation?.id) {
-    activateConversationSystems(event.snapshot.conversation.id)
-  }
-  if (
-    (!conversationId || conversationId === activeConversationId)
-    && (event?.type === 'snapshot' || taskFinished)
-  ) {
-    syncComputerActivityOverlay(event?.type === 'snapshot' ? event.snapshot : undefined)
-  }
+  if (classification.action.kind === 'activate') {
+    activateConversationSystems(classification.action.conversationId, classification.action.snapshot)
+  } else if (classification.action.kind === 'sync') syncComputerActivityOverlay()
   broadcastRuntimeEvent(event)
 }
 
@@ -224,7 +215,7 @@ function ensureConversationSystems(conversationId) {
   return { browser, computer }
 }
 
-function activateConversationSystems(conversationId) {
+function activateConversationSystems(conversationId, snapshot = runtimeHost?.getSnapshot()) {
   if (!conversationId || !mainWindow || mainWindow.isDestroyed()) return
   if (activeConversationId && activeConversationId !== conversationId) {
     browserSystems.get(activeConversationId)?.setPresentationEnabled(false)
@@ -234,8 +225,7 @@ function activateConversationSystems(conversationId) {
   browserSystem = systems.browser
   computerSystem = systems.computer
   browserSystem.setPresentationEnabled(true)
-  computerActivityOverlay?.refresh(computerSystem.getSnapshot())
-  syncComputerActivityOverlay()
+  syncComputerActivityOverlay(snapshot)
 }
 
 function destroyConversationSystems(conversationId) {
@@ -272,11 +262,12 @@ function reconcileConversationSystems(snapshot) {
     systems.browser.setWorkspacePath(snapshot.workspace.path)
     systems.computer.setWorkspacePath(snapshot.workspace.path)
   }
-  activateConversationSystems(snapshot.conversation.id)
+  activateConversationSystems(snapshot.conversation.id, snapshot)
 }
 
 function registerSystemPlugins(client, context) {
   const systems = ensureConversationSystems(context.conversationId)
+  systems.browser.register(client)
   systems.computer.register(client)
 }
 
@@ -494,10 +485,10 @@ function createWindow() {
   mainWindow.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
   mainWindow.on('focus', () => {
     void computerSystem?.refresh().catch(error => console.error('Failed to refresh Computer permissions:', error))
-    if (computerSystem) computerActivityOverlay?.refresh(computerSystem.getSnapshot())
+    syncComputerActivityOverlay()
   })
   mainWindow.on('blur', () => {
-    if (computerSystem) computerActivityOverlay?.refresh(computerSystem.getSnapshot())
+    syncComputerActivityOverlay()
   })
   mainWindow.on('closed', () => {
     if (mainWindow !== workbenchWindow) return

@@ -8,8 +8,6 @@
   ContextPolicyMode,
   ToolCall,
   ToolResult,
-  TaskPriority,
-  TaskStatus,
   TaskNode,
   TokenUsage,
   AgentRunState,
@@ -120,14 +118,16 @@ import { RuntimeTaskManager } from './runtime/runtimeTaskManager'
 import { SubAgentTaskManager, type SubAgentTaskSnapshot } from './runtime/subAgentTaskManager'
 import { ApprovalCoordinator } from './runtime/approvalCoordinator'
 import {
-  AgentRunControl,
   createAgentRunInterruption,
   interruptionMetadata,
   resolveAgentRunInterruption,
   type AgentRunControlSnapshot,
 } from './runtime/runControl'
 import { ModelStreamControl } from './runtime/modelStreamControl'
-import { emitStreamTimingTrace, streamTimingTraceEnabled, summarizeTimings } from './runtime/streamTimingTrace'
+import { AgentEventHub } from './runtime/agentEventHub'
+import { AgentSessionRehydrator, type PersistedAgentMessage } from './runtime/agentSessionRehydrator'
+import { AgentRunLifecycle } from './runtime/agentRunLifecycle'
+import { AgentContextCoordinator } from './runtime/agentContextCoordinator'
 import { createInterruptedToolResult, ToolExecutionCoordinator } from './runtime/toolExecutionCoordinator'
 import { hasCompleteToolPayloads, isOutputLimitFinishReason } from './modelStream'
 import { appendRuntimeContextToLatestUserMessage, normalizeAnthropicToolMessages } from './modelMessages'
@@ -328,11 +328,6 @@ interface EngineInteractiveRequest {
   event: AskUserEvent
 }
 
-interface PendingSteeringInput {
-  id: string
-  text: string
-}
-
 export { downgradeReasoningEffort } from './requestCompatibility'
 
 function stableHash(value: unknown): string {
@@ -371,14 +366,15 @@ export class AgentEngine {
   private session: AgentSession
   private taskManager: TaskManager
   private workExecution: WorkExecutionTracker
-  private listeners: Set<AgentEventListener> = new Set()
-  private eventRecorder: AgentEventRecorder | null = null
-  private streamTraceStartedAt = 0
-  private streamTraceLastEventAt = 0
-  private readonly streamTraceRecorderDurations = new Map<string, number[]>()
-  private readonly streamTraceListenerDurations = new Map<string, number[]>()
-  private readonly streamTraceEventIntervals = new Map<string, number[]>()
-  private readonly runControl = new AgentRunControl()
+  private readonly events = new AgentEventHub<AgentEventType>()
+  private readonly sessionRehydrator = new AgentSessionRehydrator()
+  private readonly runLifecycle: AgentRunLifecycle<AgentTurn[]>
+  private get runControl() {
+    return this.runLifecycle.control
+  }
+  private get currentRunPromise(): Promise<AgentTurn[]> | null {
+    return this.runLifecycle.getRunPromise()
+  }
   private get abortController(): AbortController | null {
     return this.runControl.getRunController()
   }
@@ -393,7 +389,34 @@ export class AgentEngine {
   }
   private readonly modelStreams = new ModelStreamControl()
   private unsubscribeTaskManager: (() => void) | null = null
-  private contextManager: ContextManager = new ContextManager()
+  private readonly contextCoordinator: AgentContextCoordinator
+  private get contextManager(): ContextManager {
+    return this.contextCoordinator.manager
+  }
+  private get preservedFiles(): Array<{ path: string; content: string }> {
+    return this.contextCoordinator.preservedFiles
+  }
+  private set preservedFiles(files: Array<{ path: string; content: string }>) {
+    this.contextCoordinator.preservedFiles = files
+  }
+  private get compressionPreparedTurnCount(): number {
+    return this.contextCoordinator.compressionPreparedTurnCount
+  }
+  private set compressionPreparedTurnCount(value: number) {
+    this.contextCoordinator.compressionPreparedTurnCount = value
+  }
+  private get forceContextCompactionBeforeNextCall(): boolean {
+    return this.contextCoordinator.forceContextCompactionBeforeNextCall
+  }
+  private set forceContextCompactionBeforeNextCall(value: boolean) {
+    this.contextCoordinator.forceContextCompactionBeforeNextCall = value
+  }
+  private get contextLimitRetryInProgress(): boolean {
+    return this.contextCoordinator.contextLimitRetryInProgress
+  }
+  private set contextLimitRetryInProgress(value: boolean) {
+    this.contextCoordinator.contextLimitRetryInProgress = value
+  }
   private readonly interactiveRequests: ApprovalCoordinator<EngineInteractiveRequest, string>
   private readonly resolvedAskUserResponses = new Map<string, string>()
   private toolCallTaskMap: Map<string, string> = new Map()
@@ -443,10 +466,6 @@ export class AgentEngine {
   private modelSurface = new ModelSurface()
   private readonly warmRequestPrefixes = new Map<ModelProtocol, WarmRequestPrefix>()
   private permissions: PermissionPipeline = createDefaultPipeline()
-  /** Files preserved from the last compaction so the model doesn't lose
-   * working context. Injected once into the next user message, then cleared. */
-  private preservedFiles: Array<{ path: string; content: string }> = []
-  private compressionPreparedTurnCount: number = 0
   private currentRunToolNames: string[] = []
   private currentRunReadFiles: Set<string> = new Set()
   private currentRunSuccessfulReadFiles: Set<string> = new Set()
@@ -457,21 +476,9 @@ export class AgentEngine {
   private conclusionGuardAttempts: number = 0
   private disabledToolNames: Set<string> = new Set()
   private pendingAssistantMessageId: string | null = null
-  private currentRunPromise: Promise<AgentTurn[]> | null = null
-  private pendingSteeringMessages: PendingSteeringInput[] = []
-  private steeringOpen = false
-  private runState: AgentRunState = { phase: 'idle', updatedAt: Date.now() }
-  private pausedResumeState: AgentRunState | null = null
-  private forceContextCompactionBeforeNextCall = false
-  private contextLimitRetryInProgress = false
   private providerTransientRetryAttempt = 0
   private providerTransientRetryStartedAt = 0
   private currentModelRequestRound = 0
-  private contextCompactionState: ContextCompactionState | null = null
-  private contextCompactionPromise: Promise<boolean> | null = null
-  private contextCompactionAbortController: AbortController | null = null
-  private contextCompactionHeartbeat: ReturnType<typeof setInterval> | null = null
-
   private toolExecutor: ToolExecutor
   private stateProvider: AgentStateProvider
   private subAgentTaskManager: SubAgentTaskManager
@@ -493,7 +500,7 @@ export class AgentEngine {
   }
 
   setEventRecorder(recorder: AgentEventRecorder | null): void {
-    this.eventRecorder = recorder
+    this.events.setRecorder(recorder)
   }
 
   constructor(
@@ -504,6 +511,11 @@ export class AgentEngine {
   ) {
     this.toolExecutor = toolExecutor
     this.stateProvider = stateProvider
+    this.contextCoordinator = new AgentContextCoordinator(stateProvider, {
+      onCompactionEvent: (eventType, state) => {
+        this.emit({ type: eventType, state } as AgentEventType)
+      },
+    })
     this.subAgentTaskManager = subAgentTaskManager || new SubAgentTaskManager({
       workspacePath: config.workspacePath || '',
       runtimeTaskManager: new RuntimeTaskManager({ defaultOwnerSessionId: config.conversationId }),
@@ -559,6 +571,27 @@ export class AgentEngine {
     }
     this.taskManager = new TaskManager()
     this.workExecution = new WorkExecutionTracker(this.session.id)
+    this.runLifecycle = new AgentRunLifecycle<AgentTurn[]>({
+      onStateChanged: state => {
+        this.workExecution.setPhase(state.phase, state.detail)
+        this.emit({ type: 'run:state', state })
+        this.emitWorkExecution()
+      },
+      onStateFallback: state => {
+        this.workExecution.setPhase(state.phase, state.detail)
+      },
+      onInputState: (input, state, reason) => {
+        this.emit({
+          type: 'input:state',
+          inputId: input.id,
+          intent: 'steer',
+          state,
+          text: input.text,
+          ...(reason ? { reason } : {}),
+        })
+      },
+      onNotification: message => this.emit({ type: 'notification', message, level: 'info' }),
+    })
     this.toolExecutionCoordinator = new ToolExecutionCoordinator({
       resolveTool: name => this.resolveToolDefinition(name),
       isWrite: toolCall => this.isWriteToolCall(toolCall),
@@ -601,30 +634,25 @@ export class AgentEngine {
 
   destroy(): void {
     this.unsubscribeTaskManager?.()
-    this.runControl.stop()
-    this.contextCompactionAbortController?.abort()
-    if (this.contextCompactionHeartbeat) clearInterval(this.contextCompactionHeartbeat)
-    this.contextCompactionHeartbeat = null
+    this.runLifecycle.destroy()
+    this.contextCoordinator.destroy()
     this.interactiveRequests.cancelAll('deny')
     this.resolvedAskUserResponses.clear()
-    this.pausedResumeState = null
-    this.runControl.finish()
-    this.contextCompactionAbortController = null
     this.modelStreams.clear()
     this.subAgentTaskManager.destroy()
-    this.listeners.clear()
+    this.events.clear()
   }
 
   getMode(): AgentMode {
     return this.session.mode
   }
 
-  setMode(mode: AgentMode): void {
+  setMode(mode: AgentMode, options?: { emitRuntimeEvent?: boolean }): void {
     const oldMode = this.session.mode
     this.session.mode = mode
     this.config.mode = mode
     invalidateStaticPromptCache()
-    this.emit({ type: 'mode:change', from: oldMode, to: mode })
+    if (options?.emitRuntimeEvent !== false) this.emit({ type: 'mode:change', from: oldMode, to: mode })
   }
 
   setAppendSystemPrompt(appendSystemPrompt: string | undefined): void {
@@ -672,17 +700,15 @@ export class AgentEngine {
   }
 
   isRunning(): boolean {
-    return Boolean(this.currentRunPromise)
+    return this.runLifecycle.isRunning()
   }
 
   getRunControlSnapshot(): AgentRunControlSnapshot {
-    return this.runControl.getSnapshot()
+    return this.runLifecycle.getControlSnapshot()
   }
 
   isContextCompacting(): boolean {
-    return this.contextCompactionPromise !== null
-      || (this.contextCompactionState?.phase !== undefined
-        && !['completed', 'interrupted', 'failed'].includes(this.contextCompactionState.phase))
+    return this.contextCoordinator.isCompacting()
   }
 
   setContextPolicy(mode: ContextPolicyMode): void {
@@ -878,19 +904,19 @@ export class AgentEngine {
   }
 
   getContextSegments(): ContextSegment[] {
-    return this.stateProvider.getContextSegments()
+    return this.contextCoordinator.getSegments()
   }
 
   setContextSegments(segments: ContextSegment[]): void {
-    this.stateProvider.setContextSegments(segments)
+    this.contextCoordinator.setSegments(segments)
   }
 
   getContextReservoir(): ContextReservoirEntry[] {
-    return this.stateProvider.getContextReservoir()
+    return this.contextCoordinator.getReservoir()
   }
 
   setContextReservoir(entries: ContextReservoirEntry[]): void {
-    this.stateProvider.setContextReservoir(entries)
+    this.contextCoordinator.setReservoir(entries)
   }
 
   /**
@@ -911,15 +937,11 @@ export class AgentEngine {
   }
 
   getContextCompactionState(): ContextCompactionState | null {
-    const persisted = this.stateProvider.getContextCompactionState?.()
-    const state = persisted ?? this.contextCompactionState
-    return state ? { ...state } : null
+    return this.contextCoordinator.getCompactionState()
   }
 
   setContextCompactionState(state: ContextCompactionState | null): void {
-    this.contextCompactionState = state ? { ...state } : null
-    this.stateProvider.setContextCompactionState?.(state ? { ...state } : null)
-    this.forceContextCompactionBeforeNextCall = state?.phase === 'interrupted' && state.recoverable
+    this.contextCoordinator.setCompactionState(state)
   }
 
   getFullConversationTurns(): AgentTurn[] {
@@ -944,9 +966,7 @@ export class AgentEngine {
     this.restoreFromMessages([])
     this.stateProvider.setContextSegments([])
     this.stateProvider.setContextReservoir([])
-    this.contextCompactionState = null
-    this.stateProvider.setContextCompactionState?.(null)
-    this.forceContextCompactionBeforeNextCall = false
+    this.contextCoordinator.resetSessionState()
     this.session.id = this.config.conversationId || generateSessionId()
     this.workExecution = new WorkExecutionTracker(this.session.id)
     this.session.currentTaskId = null
@@ -958,40 +978,10 @@ export class AgentEngine {
     this.fileBeforeSnapshots.clear()
   }
 
-  restoreFromTurns(turns: AgentTurn[], options?: { emitRunState?: boolean }): void {
-    const resultByToolCallId = new Map<string, ToolResult>()
-    for (const turn of turns) {
-      if (turn.role !== 'tool_result' || !turn.toolResults) continue
-      for (const result of turn.toolResults) {
-        resultByToolCallId.set(result.toolCallId, result)
-      }
-    }
-
-    this.restoreFromMessages(turns.map(turn => {
-      const toolCalls = turn.toolCalls?.map(toolCall => {
-        const result = resultByToolCallId.get(toolCall.id)
-        return {
-          id: toolCall.id,
-          name: toolCall.name,
-          arguments: toolCall.arguments,
-          result: result?.output,
-          isError: result?.isError,
-          status: result ? (result.isError ? 'error' : 'completed') : undefined,
-          changeSummary: result?.changeSummary,
-        }
-      })
-
-      return {
-        id: turn.id,
-        role: turn.role,
-        content: turn.content,
-        timestamp: turn.timestamp,
-        metadata: {
-          ...(turn.metadata ?? {}),
-          ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
-        },
-      }
-    }))
+  restoreFromTurns(turns: AgentTurn[], options?: { emitRunState?: boolean; emitRuntimeEvents?: boolean }): void {
+    this.restoreFromMessages(this.sessionRehydrator.messagesFromTurns(turns), {
+      emitRuntimeEvents: options?.emitRuntimeEvents,
+    })
 
     this.session.id = this.config.conversationId || generateSessionId()
     this.session.createdAt = turns[0]?.timestamp ?? Date.now()
@@ -1003,10 +993,10 @@ export class AgentEngine {
     this.modelSurface.reset(this.session.turns)
     this.session.modelSurface = this.modelSurface.getState()
     if (options?.emitRunState === false) {
-      this.runState = { phase: 'idle', updatedAt: Date.now() }
+      this.runLifecycle.restoreIdle(false)
       this.workExecution.setPhase('idle')
     } else {
-      this.setRunState('idle')
+      this.runLifecycle.restoreIdle(true)
     }
   }
 
@@ -1035,9 +1025,9 @@ export class AgentEngine {
     return this.workExecution.getSnapshot(this.taskManager)
   }
 
-  restoreWorkExecutionSnapshot(snapshot: WorkExecutionSnapshot | undefined): boolean {
+  restoreWorkExecutionSnapshot(snapshot: WorkExecutionSnapshot | undefined, options?: { emitRuntimeEvent?: boolean }): boolean {
     const restored = this.workExecution.restoreSnapshot(snapshot, this.taskManager)
-    if (restored) this.emitWorkExecution()
+    if (restored && options?.emitRuntimeEvent !== false) this.emitWorkExecution()
     return restored
   }
 
@@ -1059,47 +1049,10 @@ export class AgentEngine {
     this.warmRequestPrefixes.clear()
   }
 
-  restoreFromMessages(messages: Array<{
-    id?: string
-    role: string
-    content: string
-    timestamp?: number
-    metadata?: {
-      model?: string
-      tokens?: number | TokenUsage
-      duration?: number
-      reasoningEnabled?: boolean
-      reasoningEffort?: NonNullable<AgentTurn['metadata']>['reasoningEffort']
-      thinking?: NonNullable<AgentTurn['metadata']>['thinking']
-      rawReasoningPayload?: NonNullable<AgentTurn['metadata']>['rawReasoningPayload']
-      attachments?: NonNullable<AgentTurn['metadata']>['attachments']
-      capabilities?: NonNullable<AgentTurn['metadata']>['capabilities']
-      runtimeContext?: string
-      toolCalls?: Array<{
-        id?: string
-        name: string
-        arguments: Record<string, unknown>
-        result?: string
-        isError?: boolean
-        status?: string
-        interruption?: AgentRunInterruption
-        changeSummary?: {
-          path: string
-          operation: 'write' | 'edit' | 'delete'
-          addedLines?: number
-          removedLines?: number
-          totalLines?: number
-          preview?: string
-          oldPreview?: string
-          before?: string
-          after?: string
-        }
-      }>
-      detectedSkills?: string[]
-      isStreaming?: boolean
-      workRunId?: string
-    }
-  }>): void {
+  restoreFromMessages(messages: PersistedAgentMessage[], options?: { emitRuntimeEvents?: boolean }): void {
+    const suppressRuntimeEvents = options?.emitRuntimeEvents === false
+    const releaseEventSuppression = suppressRuntimeEvents ? this.events.suppress() : null
+    try {
     this.contextManager.reset()
     this.cacheMonitor.reset()
     this.warmRequestPrefixes.clear()
@@ -1121,126 +1074,11 @@ export class AgentEngine {
     this.pendingAssistantMessageId = null
     this.fileBeforeSnapshots.clear()
 
-    let restoredTimestampFallback = Date.now()
-    for (const msg of messages) {
-      if (msg.role === 'system') continue
-
-      const timestamp = typeof msg.timestamp === 'number' ? msg.timestamp : restoredTimestampFallback++
-      const meta = msg.metadata
-
-      if (msg.role === 'user') {
-        const userMetadata: AgentTurn['metadata'] = {}
-        if (meta?.attachments?.length) {
-          userMetadata.attachments = meta.attachments.map(attachment => ({ ...attachment }))
-        }
-        if (meta?.capabilities?.items.length) {
-          userMetadata.capabilities = { items: meta.capabilities.items.map(item => ({ ...item })) }
-        }
-        if (typeof meta?.runtimeContext === 'string') {
-          userMetadata.runtimeContext = meta.runtimeContext
-        }
-        if (typeof meta?.workRunId === 'string') userMetadata.workRunId = meta.workRunId
-        this.session.turns.push({
-          id: msg.id || generateTurnId(),
-          role: 'user',
-          content: msg.content,
-          timestamp,
-          metadata: Object.keys(userMetadata).length > 0 ? userMetadata : undefined,
-        })
-      } else if (msg.role === 'assistant') {
-        // Reconstruct toolCalls from ChatMessage.metadata.toolCalls (ToolCallInfo[])
-        let toolCalls: ToolCall[] | undefined
-        let toolResults: ToolResult[] | undefined
-
-        if (meta?.toolCalls && meta.toolCalls.length > 0) {
-          const restoredIds = meta.toolCalls.map((tc, idx) => tc.id || `restored_tc_${idx}_${timestamp}`)
-
-          toolCalls = meta.toolCalls.map((tc, idx) => ({
-            id: restoredIds[idx],
-            name: tc.name,
-            arguments: tc.arguments,
-          }))
-
-          // Reconstruct toolResults from ToolCallInfo.result.
-          // Only completed/error/cancelled calls have meaningful results.
-          const restoredResults: ToolResult[] = []
-          meta.toolCalls.forEach((tc, idx) => {
-            const hasResult = tc.result !== undefined
-            const hasTerminalStatus = tc.status === 'completed' || tc.status === 'error' || tc.status === 'cancelled'
-            if (!hasResult && !hasTerminalStatus) return
-
-            const result: ToolResult = {
-              toolCallId: restoredIds[idx],
-              name: tc.name,
-              output: tc.result ?? '',
-              isError: tc.isError ?? (tc.status === 'error' || tc.status === 'cancelled'),
-            }
-            if (tc.interruption) {
-              result.interruption = { ...tc.interruption }
-              result.errorKind = 'abort'
-            } else if (tc.status === 'cancelled') {
-              result.interruption = /paused by user/i.test(result.output)
-                ? interruptionMetadata('pause')
-                : interruptionMetadata('stop')
-              result.errorKind = 'abort'
-            }
-            if (tc.changeSummary) result.changeSummary = tc.changeSummary
-            restoredResults.push(result)
-          })
-          if (restoredResults.length > 0) toolResults = restoredResults
-        }
-
-        // Reconstruct metadata
-        const turnMetadata: AgentTurn['metadata'] = {}
-        if (meta?.model) turnMetadata.model = meta.model
-        if (typeof meta?.tokens === 'number') turnMetadata.tokens = { input: meta.tokens, output: 0 }
-        else if (meta?.tokens) turnMetadata.tokens = meta.tokens
-        if (meta?.duration) turnMetadata.duration = meta.duration
-        if (typeof meta?.reasoningEnabled === 'boolean') turnMetadata.reasoningEnabled = meta.reasoningEnabled
-        if (meta?.reasoningEffort) turnMetadata.reasoningEffort = meta.reasoningEffort
-        if (meta?.thinking) turnMetadata.thinking = { ...meta.thinking, isStreaming: false }
-        if (typeof meta?.workRunId === 'string') turnMetadata.workRunId = meta.workRunId
-        if (meta?.rawReasoningPayload) {
-          turnMetadata.rawReasoningPayload = {
-            provider: meta.rawReasoningPayload.provider,
-            blocks: meta.rawReasoningPayload.blocks.map(block => ({ ...block })),
-            // Preserve reasoning_content when restoring from persisted history.
-            // OpenAI-compatible providers (mimo, DeepSeek-R1) require this
-            // string to be echoed back on every subsequent request — dropping
-            // it here means a freshly restored conversation 400s on its first
-            // follow-up turn.
-            ...(meta.rawReasoningPayload.reasoningContent
-              ? { reasoningContent: meta.rawReasoningPayload.reasoningContent }
-              : {}),
-          }
-        }
-        const assistantTurn: AgentTurn = {
-          id: msg.id || generateTurnId(),
-          role: 'assistant',
-          content: msg.content,
-          timestamp,
-          toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined,
-          metadata: Object.keys(turnMetadata).length > 0 ? turnMetadata : undefined,
-        }
-
-        this.session.turns.push(assistantTurn)
-
-        if (toolResults && toolResults.length > 0) {
-          this.session.turns.push({
-            id: `${assistantTurn.id}:tool_results`,
-            role: 'tool_result',
-            content: toolResults.map(r => `${r.name}: ${r.isError ? 'error' : 'ok'} ${(r.output || '').slice(0, 500)}`).join('\n\n'),
-            timestamp: timestamp + 1,
-            toolResults,
-          })
-        }
-
-        if (meta?.toolCalls && meta.toolCalls.length > 0) {
-          this.taskManager.setCurrentWorkRunId(meta.workRunId || null)
-          this.restoreTasksFromToolCalls(meta.toolCalls, timestamp)
-        }
-      }
-    }
+    this.session.turns = this.sessionRehydrator.rehydrateMessages(messages, {
+      systemTurns: this.session.turns,
+      taskManager: this.taskManager,
+      isToolOutputFailure: (name, output) => this.isToolOutputFailure(name, output),
+    })
 
     // Re-establish a token baseline from the rewound turns so the context bar
     // shows the correct occupancy instead of falling back to rough char estimates.
@@ -1257,214 +1095,36 @@ export class AgentEngine {
     this.session.modelSurface = this.modelSurface.getState()
     this.emitActiveTaskContext()
     this.emitWorkExecution()
-  }
-
-  private restoreTasksFromToolCalls(
-    toolCalls: Array<{
-      name: string
-      arguments: Record<string, unknown>
-      result?: string
-      isError?: boolean
-      status?: string
-      changeSummary?: {
-        path: string
-        operation: 'write' | 'edit' | 'delete'
-        addedLines?: number
-        totalLines?: number
-        preview?: string
-        oldPreview?: string
-        before?: string
-        after?: string
-      }
-    }>,
-    timestamp: number,
-  ): void {
-    for (const tc of toolCalls) {
-      if (tc.name === 'create_task') {
-        if (!this.isRestorableTaskToolCall(tc)) continue
-        const args = tc.arguments || {}
-        let parsedResult: Record<string, unknown> | null = null
-
-        if (tc.result) {
-          try {
-            parsedResult = JSON.parse(tc.result) as Record<string, unknown>
-          } catch {
-            parsedResult = null
-          }
-        }
-
-        const restoredId = typeof parsedResult?.id === 'string'
-          ? parsedResult.id
-          : `restored-task-${timestamp}-${String(args.title || 'task')}`
-
-        this.taskManager.restoreTask({
-          id: restoredId,
-          title: String(args.title || parsedResult?.title || 'Task'),
-          description: String(args.description || ''),
-          priority: ((args.priority as TaskPriority | undefined) || (parsedResult?.priority as TaskPriority | undefined) || 'medium'),
-          status: (parsedResult?.status as TaskStatus | undefined) || 'pending',
-          parentId: (args.parent_id as string | undefined) || null,
-          progress: (parsedResult?.status as TaskStatus | undefined) === 'completed' ? 100 : 0,
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        })
-        const deps = args.dependencies as string[] | undefined
-        if (deps && deps.length > 0) {
-          for (const depId of deps) {
-            this.taskManager.addDependency(restoredId, depId)
-          }
-        }
-      }
-
-      if (tc.name === 'create_tasks') {
-        if (!this.isRestorableTaskToolCall(tc)) continue
-        const args = tc.arguments || {}
-        const items = args.tasks as Array<Record<string, unknown>> | undefined
-        if (!Array.isArray(items)) continue
-
-        // Try to recover ids from the parsed tool result so dependencies
-        // line up. Fall back to deterministic synthetic ids if not present.
-        let createdById: Record<string, unknown> | null = null
-        if (tc.result) {
-          try {
-            const parsed = JSON.parse(tc.result) as { created?: Array<Record<string, unknown>> }
-            if (parsed?.created) {
-              createdById = {}
-              parsed.created.forEach((c, idx) => {
-                if (createdById && typeof c.id === 'string') {
-                  createdById[String(idx)] = c
-                  if (typeof c.ref === 'string') createdById[c.ref] = c
-                }
-              })
-            }
-          } catch { /* ignore */ }
-        }
-
-        const refToId = new Map<string, string>()
-        items.forEach((raw, i) => {
-          const recovered = createdById?.[String(i)] || (typeof raw.ref === 'string' ? createdById?.[raw.ref] : null)
-          const restoredId = typeof (recovered as Record<string, unknown>)?.id === 'string'
-            ? String((recovered as Record<string, unknown>).id)
-            : `restored-task-${timestamp}-${i}-${String(raw.title || 'task')}`
-          if (typeof raw.ref === 'string') refToId.set(raw.ref, restoredId)
-
-          const resolveRef = (value: unknown): string | undefined => {
-            if (typeof value !== 'string' || !value) return undefined
-            return refToId.get(value) ?? value
-          }
-
-          this.taskManager.restoreTask({
-            id: restoredId,
-            title: String(raw.title || 'Task'),
-            description: String(raw.description || ''),
-            priority: ((raw.priority as TaskPriority | undefined) || 'medium'),
-            status: 'pending',
-            parentId: resolveRef(raw.parent_id) || null,
-            progress: 0,
-            createdAt: timestamp,
-            updatedAt: timestamp,
-          })
-
-          const deps = raw.dependencies as unknown[] | undefined
-          if (Array.isArray(deps)) {
-            for (const depRef of deps) {
-              const depId = resolveRef(depRef)
-              if (depId) this.taskManager.addDependency(restoredId, depId)
-            }
-          }
-        })
-      }
-
-      if (tc.name === 'update_task') {
-        if (!this.isRestorableTaskToolCall(tc)) continue
-        const args = tc.arguments || {}
-        const taskId = args.task_id as string | undefined
-        if (!taskId) continue
-
-        this.taskManager.updateTask(taskId, {
-          status: args.status as TaskStatus | undefined,
-          progress: args.progress as number | undefined,
-          error: args.error as string | undefined,
-        })
-      }
+    } finally {
+      releaseEventSuppression?.()
     }
-  }
-
-  private isRestorableTaskToolCall(toolCall: { name: string; result?: string; isError?: boolean; status?: string }): boolean {
-    if (toolCall.isError) return false
-    if (toolCall.status === 'error' || toolCall.status === 'cancelled' || toolCall.status === 'pending' || toolCall.status === 'running') return false
-    if (toolCall.status === 'completed') return true
-    if (!toolCall.result) return false
-    if (/^(Cancelled|Aborted):/i.test(toolCall.result.trim())) return false
-    return !this.isToolOutputFailure(toolCall.name, toolCall.result)
   }
 
   subscribe(listener: AgentEventListener): () => void {
-    this.listeners.add(listener)
-    return () => this.listeners.delete(listener)
+    return this.events.subscribe(listener)
   }
 
   getRunState(): AgentRunState {
-    return this.runState
+    return this.runLifecycle.getState()
   }
 
   private setRunState(phase: AgentRunPhase, options?: Pick<AgentRunState, 'detail' | 'activeTool' | 'recoverable'>): void {
-    const previousPhase = this.runState.phase
-    const startsNewRun = phase === 'thinking' && (previousPhase === 'idle' || previousPhase === 'completed' || previousPhase === 'recoverable_error')
-    const startedAt = phase === 'idle'
-      ? undefined
-      : startsNewRun
-        ? Date.now()
-        : this.runState.startedAt ?? Date.now()
-    this.runState = {
-      phase,
-      startedAt,
-      updatedAt: Date.now(),
-      ...options,
-    }
-    this.workExecution.setPhase(phase, options?.detail)
-    this.emit({ type: 'run:state', state: this.runState })
-    this.emitWorkExecution()
+    this.runLifecycle.setState(phase, options)
   }
 
   private setRunStateAfterPause(phase: AgentRunPhase, options?: Pick<AgentRunState, 'detail' | 'activeTool' | 'recoverable'>): void {
-    if (this.runControl.getSnapshot().paused) {
-      this.pausedResumeState = {
-        phase,
-        startedAt: this.runState.startedAt,
-        updatedAt: Date.now(),
-        ...options,
-      }
-      return
-    }
-    this.setRunState(phase, options)
+    this.runLifecycle.setStateAfterPause(phase, options)
   }
 
   submitSteeringMessage(message: string, inputId = `steer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`): boolean {
-    const trimmed = message.trim()
-    if (!trimmed || !this.currentRunPromise || !this.steeringOpen) return false
-    const pending = { id: inputId, text: trimmed }
-    this.pendingSteeringMessages.push(pending)
-    try {
-      this.emit({ type: 'input:state', inputId, intent: 'steer', state: 'accepted', text: trimmed })
-    } catch (error) {
-      const index = this.pendingSteeringMessages.indexOf(pending)
-      if (index >= 0) this.pendingSteeringMessages.splice(index, 1)
-      throw error
-    }
-    this.emit({ type: 'notification', message: 'Guidance added to the current run.', level: 'info' })
-    return true
+    return this.runLifecycle.submitSteering(message, inputId)
   }
 
   private consumeSteeringMessages(newTurns: AgentTurn[]): boolean {
-    if (this.pendingSteeringMessages.length === 0) return false
-    const messages = this.pendingSteeringMessages.splice(0)
-    for (const message of messages) {
+    return this.runLifecycle.consumeSteering(message => {
       const userTurn = this.createUserTurn(message.text, undefined, message.id)
       this.appendUserTurn(userTurn, newTurns)
-      this.emit({ type: 'input:state', inputId: message.id, intent: 'steer', state: 'committed', text: message.text })
-    }
-    return true
+    })
   }
 
   private appendUserTurn(turn: AgentTurn, newTurns: AgentTurn[]): void {
@@ -1480,17 +1140,7 @@ export class AgentEngine {
   }
 
   private rejectPendingSteeringMessages(reason: string): void {
-    const pending = this.pendingSteeringMessages.splice(0)
-    for (const message of pending) {
-      this.emit({
-        type: 'input:state',
-        inputId: message.id,
-        intent: 'steer',
-        state: 'rejected',
-        text: message.text,
-        reason,
-      })
-    }
+    this.runLifecycle.rejectPendingSteering(reason)
   }
 
   publishRuntimeTaskEvent(event: RuntimeTaskEvent): void {
@@ -1524,25 +1174,18 @@ export class AgentEngine {
   }
 
   abort(): void {
-    if (this.currentRunPromise) this.setRunState('aborting', { detail: 'Stopping current run' })
-    this.steeringOpen = false
-    this.rejectPendingSteeringMessages('Current run was interrupted before guidance was committed')
-    this.runControl.stop()
-    this.pausedResumeState = null
-    this.contextCompactionAbortController?.abort()
-    void this.subAgentTaskManager.stopAll('Parent agent run cancelled')
-    for (const sessionId of this.agentBackgroundSessions.keys()) {
-      const stop = this.toolExecutor.ptyKill?.(sessionId)
-      if (stop) void stop.catch(() => {})
-    }
-    this.agentBackgroundSessions.clear()
-    // Per-conv stream abort: only cancel THIS engine's HTTP stream in the
-    // main process, not every active stream across all conversations.
-    this.modelStreams.abortActive(streamId => this.toolExecutor.streamAbort?.(streamId))
-    // Keep the controller alive so subsequent signal.aborted checks
-    // don't NPE; destroy() is the only path that nulls it.
-    this.interactiveRequests.cancelAll('deny')
-    this.resolvedAskUserResponses.clear()
+    this.runLifecycle.abort(() => {
+      this.contextCoordinator.abortCompaction()
+      void this.subAgentTaskManager.stopAll('Parent agent run cancelled')
+      for (const sessionId of this.agentBackgroundSessions.keys()) {
+        const stop = this.toolExecutor.ptyKill?.(sessionId)
+        if (stop) void stop.catch(() => {})
+      }
+      this.agentBackgroundSessions.clear()
+      this.modelStreams.abortActive(streamId => this.toolExecutor.streamAbort?.(streamId))
+      this.interactiveRequests.cancelAll('deny')
+      this.resolvedAskUserResponses.clear()
+    })
   }
 
   submitAskUserResponse(response: string, requestId?: string): boolean {
@@ -1556,25 +1199,14 @@ export class AgentEngine {
   }
 
   pause(): boolean {
-    const resumeState = { ...this.runState }
     const hasPendingInteractiveRequest = this.interactiveRequests.getSnapshot().pendingCount > 0
-    if (!this.runControl.pause({ interruptOperation: !hasPendingInteractiveRequest })) return false
-    this.pausedResumeState = resumeState
-    this.setRunState('paused', { detail: 'Paused by user' })
-    this.modelStreams.abortActive(streamId => this.toolExecutor.streamAbort?.(streamId))
-    return true
+    return this.runLifecycle.pause(hasPendingInteractiveRequest, () => {
+      this.modelStreams.abortActive(streamId => this.toolExecutor.streamAbort?.(streamId))
+    })
   }
 
   resume(): boolean {
-    if (!this.runControl.resume()) return false
-    const resumeState = this.pausedResumeState
-    this.pausedResumeState = null
-    this.setRunState(resumeState?.phase === 'paused' ? 'thinking' : resumeState?.phase || 'thinking', {
-      detail: resumeState?.detail || 'Resuming run',
-      activeTool: resumeState?.activeTool,
-      recoverable: resumeState?.recoverable,
-    })
-    return true
+    return this.runLifecycle.resume()
   }
 
   private isContextLimitError(message: string): boolean {
@@ -1659,51 +1291,27 @@ export class AgentEngine {
   }
 
   async waitUntilIdle(): Promise<void> {
-    while (this.currentRunPromise || this.contextCompactionPromise) {
-      const pending = [this.currentRunPromise, this.contextCompactionPromise]
+    while (this.currentRunPromise || this.contextCoordinator.contextCompactionPromise) {
+      const pending = [this.currentRunPromise, this.contextCoordinator.contextCompactionPromise]
         .filter(Boolean) as Promise<unknown>[]
       await Promise.allSettled(pending)
     }
   }
 
   private settleRunFailure(error: unknown, workRunStarted: boolean): void {
-    const errAborted = (error as { aborted?: boolean })?.aborted === true
-      || this.abortController?.signal.aborted === true
-    const errorAlreadyReported = (error as { alreadyReported?: boolean })?.alreadyReported === true
-    const errorMsg = error instanceof Error ? error.message : 'Unknown error'
-    const phase: AgentRunPhase = errAborted ? 'completed' : 'recoverable_error'
-    const detail = errAborted ? 'Run stopped' : errorMsg
-    try {
-      this.setRunState(phase, { detail, recoverable: errAborted ? undefined : true })
-    } catch {
-      const now = Date.now()
-      this.runState = {
-        phase,
-        startedAt: this.runState.startedAt ?? now,
-        updatedAt: now,
-        detail,
-        recoverable: errAborted ? undefined : true,
-      }
-      this.workExecution.setPhase(phase, detail)
+    const failure = this.runLifecycle.settleFailure(error)
+    if (!failure.aborted && !failure.alreadyReported) {
+      try { this.emit({ type: 'error', error: failure.message }) } catch {}
     }
-    if (!errAborted && !errorAlreadyReported) {
-      try { this.emit({ type: 'error', error: errorMsg }) } catch {}
-    }
-    this.steeringOpen = false
-    try {
-      this.rejectPendingSteeringMessages(errAborted
-        ? 'Current run was interrupted before guidance was committed'
-        : 'Current run failed before guidance was committed')
-    } catch {}
     try { this.expireComputerToolPayloads() } catch {}
     if (workRunStarted) {
       const runError = error instanceof Error ? error.message : String(error)
       try {
         this.workExecution.finishRun(
-          errAborted ? 'cancelled' : 'failed',
+          failure.aborted ? 'cancelled' : 'failed',
           undefined,
-          errAborted ? undefined : (error as { userFacing?: boolean })?.userFacing === true ? runError : presentRequestError(runError),
-          errAborted ? undefined : this.taskManager,
+          failure.aborted ? undefined : (error as { userFacing?: boolean })?.userFacing === true ? runError : presentRequestError(runError),
+          failure.aborted ? undefined : this.taskManager,
         )
       } catch {}
     }
@@ -1714,7 +1322,7 @@ export class AgentEngine {
   }
 
   async run(userMessage: string, options?: { reuseLastUserTurn?: boolean; attachments?: NonNullable<AgentTurn['metadata']>['attachments']; capabilities?: NonNullable<AgentTurn['metadata']>['capabilities']; userTurnId?: string }): Promise<AgentTurn[]> {
-    if (this.currentRunPromise) {
+    if (this.runLifecycle.isRunning()) {
       throw new Error('AgentEngine.run() called while a previous run is still in flight')
     }
     const runPromise = (async () => {
@@ -1728,10 +1336,8 @@ export class AgentEngine {
     const newTurns: AgentTurn[] = []
     let workRunStarted = false
     try {
-      this.runControl.start(runAbortController)
+      this.runLifecycle.beginRun(runAbortController)
       this.permissions.clearRunGrants()
-      this.rejectPendingSteeringMessages('Previous run ended before guidance was committed')
-      this.steeringOpen = true
       this.currentRunToolNames = []
       this.currentRunReadFiles.clear()
       this.currentRunSuccessfulReadFiles.clear()
@@ -1922,8 +1528,7 @@ export class AgentEngine {
         }
       }
 
-      this.steeringOpen = false
-      this.rejectPendingSteeringMessages('Current turn finished before guidance was committed')
+      this.runLifecycle.closeSteering('Current turn finished before guidance was committed')
       this.session.updatedAt = Date.now()
       const lastAssistantTurn = [...newTurns].reverse().find(turn => turn.role === 'assistant')
       const internallyInterrupted = lastAssistantTurn?.metadata?.interrupted === true
@@ -1961,21 +1566,12 @@ export class AgentEngine {
       throw error
     } finally {
       try { this.permissions.clearRunGrants() } catch {}
-      this.steeringOpen = false
-      try { this.rejectPendingSteeringMessages('Current run ended before guidance was committed') } catch {}
+      try { this.runLifecycle.closeSteering('Current run ended before guidance was committed') } catch {}
       try { this.taskManager.setCurrentWorkRunId(null) } catch {}
       try { this.subAgentTaskManager.setExecutionContext(null) } catch {}
     }
     })()
-    this.currentRunPromise = runPromise
-    // Always release the slot once the run settles, even on rejection.
-    void runPromise.catch(() => { /* surfaced via emit + caller try/catch */ }).finally(() => {
-      if (this.currentRunPromise === runPromise) {
-        this.currentRunPromise = null
-        this.pausedResumeState = null
-        this.runControl.finish()
-      }
-    })
+    this.runLifecycle.trackRun(runPromise)
     return runPromise
   }
 
@@ -2003,17 +1599,10 @@ export class AgentEngine {
   }
 
   private async performContextCompaction(source: ContextReservoirEntry['source']): Promise<boolean> {
-    if (this.contextCompactionPromise) return this.contextCompactionPromise
-    const promise = this.performContextCompactionInternal(
+    return this.contextCoordinator.runCompaction(() => this.performContextCompactionInternal(
       source,
-      Boolean(this.currentRunPromise) && this.runState.phase !== 'completed',
-    )
-    this.contextCompactionPromise = promise
-    try {
-      return await promise
-    } finally {
-      if (this.contextCompactionPromise === promise) this.contextCompactionPromise = null
-    }
+      Boolean(this.currentRunPromise) && this.runLifecycle.getState().phase !== 'completed',
+    ))
   }
 
   private async performContextCompactionInternal(
@@ -2039,11 +1628,7 @@ export class AgentEngine {
 
     const compactionId = `context-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const startedAt = Date.now()
-    this.contextCompactionAbortController = new AbortController()
-    const unlinkOperation = partOfRun
-      ? this.runControl.linkOperation(this.contextCompactionAbortController)
-      : () => undefined
-    this.contextCompactionState = {
+    const scope = this.contextCoordinator.beginCompaction({
       id: compactionId,
       phase: 'started',
       source,
@@ -2056,28 +1641,25 @@ export class AgentEngine {
       originalCharCount,
       progress: 0,
       recoverable: true,
-    }
-    this.stateProvider.setContextCompactionState?.({ ...this.contextCompactionState })
-    this.emit({ type: 'context:compaction_started', state: this.getContextCompactionState()! })
-    this.startContextCompactionHeartbeat()
+    }, partOfRun ? controller => this.runControl.linkOperation(controller) : undefined)
     if (partOfRun) this.setRunState('compacting', { detail: 'Preparing a durable context handoff' })
 
-    const signal = this.contextCompactionAbortController.signal
+    const signal = scope.signal
     try {
-      this.updateContextCompactionState('summarizing', {
+      this.contextCoordinator.updateCompactionState('summarizing', {
         progress: 0.12,
         detail: existingSegment ? 'Restoring the previous handoff' : 'Summarizing older turns',
       }, 'context:compaction_summarizing')
       const previousHandoff = this.getLatestContextHandoff()
       const workspace = await this.collectContinuationWorkspaceSnapshot()
-      if (signal.aborted) throw this.createContextCompactionAbortError()
+      if (signal.aborted) throw this.contextCoordinator.createCompactionAbortError()
       const facts = collectContinuationHandoffFacts(oldTurns, recentTurns, workspace, previousHandoff?.facts)
       const summaryResult = existingSegment
         ? { text: existingSegment.summary, source: 'reused' as const }
         : await this.generateContinuationSummary(oldTurns, recentTurns, workspace, previousHandoff, facts)
-      if (signal.aborted) throw this.createContextCompactionAbortError()
+      if (signal.aborted) throw this.contextCoordinator.createCompactionAbortError()
       if (summaryResult.source === 'deterministic') {
-        this.updateContextCompactionState('fallback', {
+        this.contextCoordinator.updateCompactionState('fallback', {
           progress: 0.58,
           summarySource: summaryResult.source,
           detail: 'Model summary unavailable; using deterministic handoff',
@@ -2126,12 +1708,12 @@ export class AgentEngine {
         nextSegment = { ...existingSegment, handoff }
       }
 
-      this.updateContextCompactionState('committing', {
+      this.contextCoordinator.updateCompactionState('committing', {
         progress: 0.72,
         summarySource: summaryResult.source,
         detail: 'Writing the compacted context checkpoint',
       }, 'context:compaction_committing')
-      if (signal.aborted) throw this.createContextCompactionAbortError()
+      if (signal.aborted) throw this.contextCoordinator.createCompactionAbortError()
 
       if (!existingSegment || !existingSegment.handoff) {
         this.stateProvider.setContextSegments(this.stateProvider.getContextSegments().map(segment =>
@@ -2142,8 +1724,15 @@ export class AgentEngine {
         this.emit({ type: 'context:segment_created', segment: nextSegment! })
       }
 
-      this.addReservoirEntry(startMessageId, endMessageId, oldTurns, source, originalCharCount)
-      this.preservedFiles = this.collectPreservedFiles(oldTurns)
+      this.contextCoordinator.addReservoirEntry(
+        startMessageId,
+        endMessageId,
+        oldTurns,
+        source,
+        turn => this.countTurnChars(turn),
+        originalCharCount,
+      )
+      this.preservedFiles = this.contextCoordinator.collectPreservedFiles(oldTurns)
 
       const systemTurns = this.session.turns.filter(turn => turn.role === 'system')
       this.session.turns = [...systemTurns, ...recentTurns]
@@ -2151,7 +1740,7 @@ export class AgentEngine {
       this.session.modelSurface = this.modelSurface.getState()
       this.contextManager.reset()
       this.cacheMonitor.resetBaseline()
-      this.updateContextCompactionState('completed', {
+      this.contextCoordinator.updateCompactionState('completed', {
         progress: 1,
         summarySource: summaryResult.source,
         detail: 'Context handoff committed; original turns remain in history',
@@ -2163,7 +1752,7 @@ export class AgentEngine {
       const interrupted = signal.aborted || (error as { aborted?: boolean })?.aborted === true
       const paused = this.runControl.isPauseSignal(signal) || this.runControl.isPauseInterruption(error)
       const message = error instanceof Error ? error.message : String(error)
-      this.updateContextCompactionState(interrupted ? 'interrupted' : 'failed', {
+      this.contextCoordinator.updateCompactionState(interrupted ? 'interrupted' : 'failed', {
         detail: interrupted ? 'Compaction interrupted; original turns were preserved' : 'Compaction failed; retry is available',
         error: interrupted ? undefined : message.slice(0, 500),
         recoverable: true,
@@ -2172,53 +1761,11 @@ export class AgentEngine {
         if (!paused) this.setRunState('aborting', { detail: 'Context compaction interrupted; original turns preserved' })
       }
       if (paused) throw signal.reason instanceof Error ? signal.reason : createAgentRunInterruption('pause')
-      if (interrupted) throw this.createContextCompactionAbortError()
+      if (interrupted) throw this.contextCoordinator.createCompactionAbortError()
       throw error
     } finally {
-      unlinkOperation()
-      this.stopContextCompactionHeartbeat()
-      this.contextCompactionAbortController = null
+      scope.close()
     }
-  }
-
-  private updateContextCompactionState(
-    phase: ContextCompactionState['phase'],
-    patch: Partial<ContextCompactionState>,
-    eventType: Extract<AgentEventType, { type: `context:compaction_${string}` }>['type'],
-  ): void {
-    const current = this.contextCompactionState
-    if (!current) return
-    const updatedAt = Date.now()
-    const next: ContextCompactionState = {
-      ...current,
-      ...patch,
-      phase,
-      updatedAt,
-      elapsedMs: Math.max(0, updatedAt - current.startedAt),
-    }
-    this.contextCompactionState = next
-    this.stateProvider.setContextCompactionState?.({ ...next })
-    this.emit({ type: eventType, state: { ...next } } as AgentEventType)
-  }
-
-  private startContextCompactionHeartbeat(): void {
-    this.stopContextCompactionHeartbeat()
-    this.contextCompactionHeartbeat = setInterval(() => {
-      const phase = this.contextCompactionState?.phase
-      if (!phase || ['completed', 'interrupted', 'failed'].includes(phase)) return
-      this.updateContextCompactionState(phase, {}, 'context:compaction_progress')
-    }, 1500)
-  }
-
-  private stopContextCompactionHeartbeat(): void {
-    if (this.contextCompactionHeartbeat) clearInterval(this.contextCompactionHeartbeat)
-    this.contextCompactionHeartbeat = null
-  }
-
-  private createContextCompactionAbortError(): Error & { aborted: boolean } {
-    const error = new Error('Context compaction aborted') as Error & { aborted: boolean }
-    error.aborted = true
-    return error
   }
 
   private createPausedAssistantTurn(
@@ -2309,8 +1856,8 @@ export class AgentEngine {
       }
       if (validation.valid) return { text: validation.text, source: 'model' }
     } catch (error) {
-      if (this.contextCompactionAbortController?.signal.aborted || (error as { aborted?: boolean })?.aborted === true) {
-        throw this.createContextCompactionAbortError()
+      if (this.contextCoordinator.getCompactionSignal()?.aborted || (error as { aborted?: boolean })?.aborted === true) {
+        throw this.contextCoordinator.createCompactionAbortError()
       }
       return deterministic()
     }
@@ -2374,7 +1921,7 @@ export class AgentEngine {
       }
 
       const result = await this.toolExecutor.sendMessage(url, headers, JSON.stringify(body), {
-        signal: this.contextCompactionAbortController?.signal || this.abortController?.signal,
+        signal: this.contextCoordinator.getCompactionSignal() || this.abortController?.signal,
         timeoutMs: CONTEXT_COMPACTION_REQUEST_TIMEOUT_MS,
       })
       if (result.success && result.data) {
@@ -2434,76 +1981,6 @@ export class AgentEngine {
 
   private countTurnChars(turn: AgentTurn): number {
     return countTurnContextChars(turn)
-  }
-
-  private collectPreservedFiles(turns: AgentTurn[]): Array<{ path: string; content: string }> {
-    const pathByToolCallId = new Map<string, string>()
-    for (const turn of turns) {
-      if (turn.role !== 'assistant' || !turn.toolCalls) continue
-      for (const call of turn.toolCalls) {
-        if ((call.name === 'read_file' || call.name === 'read_file_full') && typeof call.arguments.path === 'string') {
-          pathByToolCallId.set(call.id, call.arguments.path)
-        }
-      }
-    }
-
-    const preserved: Array<{ path: string; content: string }> = []
-    const seenPaths = new Set<string>()
-    const maxFiles = 5
-    const maxChars = 20_000
-    for (let index = turns.length - 1; index >= 0 && preserved.length < maxFiles; index -= 1) {
-      const turn = turns[index]
-      if (turn.role !== 'tool_result' || !turn.toolResults) continue
-      for (const result of turn.toolResults) {
-        if (result.name !== 'read_file' && result.name !== 'read_file_full') continue
-        const path = pathByToolCallId.get(result.toolCallId)
-        if (!path || seenPaths.has(path)) continue
-        seenPaths.add(path)
-        const content = result.output.length > maxChars
-          ? `${result.output.slice(0, maxChars)}\n<recent_file_truncated />`
-          : result.output
-        preserved.push({ path, content })
-        if (preserved.length >= maxFiles) break
-      }
-    }
-    return preserved.reverse()
-  }
-
-  private addReservoirEntry(
-    startMessageId: string,
-    endMessageId: string,
-    turns: AgentTurn[],
-    source: ContextReservoirEntry['source'],
-    originalCharCount = turns.reduce((sum, turn) => sum + this.countTurnChars(turn), 0),
-  ): void {
-    if (turns.length === 0) return
-    this.stateProvider.addContextReservoirEntry({
-      id: `reservoir-${startMessageId}-${endMessageId}`,
-      startMessageId,
-      endMessageId,
-      turns: turns.map(turn => ({ ...turn })),
-      source,
-      originalCharCount,
-      createdAt: Date.now(),
-    })
-    this.pruneContextReservoir()
-  }
-
-  private pruneContextReservoir(): void {
-    const MAX_ENTRIES = 24
-    const MAX_CHARS = 2_500_000
-    const entries = this.stateProvider.getContextReservoir()
-      .slice()
-      .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
-    const kept: ContextReservoirEntry[] = []
-    let totalChars = 0
-    for (const entry of entries) {
-      const chars = entry.originalCharCount || entry.turns.reduce((sum, turn) => sum + this.countTurnChars(turn), 0)
-      if (kept.length >= MAX_ENTRIES || totalChars + chars > MAX_CHARS) continue
-      kept.push(entry)
-      totalChars += chars
-    }
-    this.stateProvider.setContextReservoir(kept.sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0)))
   }
 
   private buildToolRetryHint(failedToolCalls: ToolCall[], toolResults: ToolResult[]): string | null {
@@ -3889,17 +3366,18 @@ Before retrying:
   ): AgentTurn[] {
     const maxOutputTokens = this.config.maxTokens || activeModel?.maxTokens || 4096
     const contextWindow = activeModel?.contextWindow || activeConfig.contextWindow || this.config.contextWindow || 200_000
-    this.modelSurface.syncTurns(this.buildContextCandidateTurns(contextWindow, maxOutputTokens))
-    this.modelSurface.appendSnapshot('work_execution', this.buildWorkExecutionContext())
-    if (preservedFiles.length > 0) {
-      this.modelSurface.appendSnapshot('compaction_files', this.buildPreservedFilesContext(preservedFiles))
-    }
-    this.modelSurface.pruneStaleToolResults(this.workExecution.getCurrentRunId() || undefined)
-    if (activeConfig.modelCapabilities?.vision ?? activeModel?.supportsVision ?? true) {
-      this.modelSurface.enforceImageBudget()
-    }
-    this.session.modelSurface = this.modelSurface.getState()
-    return this.modelSurface.projectTurns()
+    const prepared = this.contextCoordinator.prepareModelSurface({
+      modelSurface: this.modelSurface,
+      candidateTurns: this.buildContextCandidateTurns(contextWindow, maxOutputTokens),
+      workExecutionContext: this.buildWorkExecutionContext(),
+      preservedFilesContext: preservedFiles.length > 0
+        ? this.buildPreservedFilesContext(preservedFiles)
+        : undefined,
+      currentRunId: this.workExecution.getCurrentRunId() || undefined,
+      supportsVision: activeConfig.modelCapabilities?.vision ?? activeModel?.supportsVision ?? true,
+    })
+    this.session.modelSurface = prepared.state
+    return prepared.turns
   }
 
   private buildApiMessages(
@@ -5797,9 +5275,15 @@ Before high-confidence claims: locate authoritative code via search_symbols/sear
       default:
         if (this.mcpClient && isMcpTool(name)) {
           const signal = operationSignal
-          const result = signal
-            ? await executeMcpTool(this.mcpClient, name, args, { signal })
-            : await executeMcpTool(this.mcpClient, name, args)
+          const result = await executeMcpTool(this.mcpClient, name, args, {
+            ...(signal ? { signal } : {}),
+            execution: {
+              conversationId: this.config.conversationId,
+              runId: this.workExecution.getCurrentRunId() || undefined,
+              toolCallId,
+              itemId: toolCallId,
+            },
+          })
           if (result.isError) throw new Error(result.output)
           return {
             output: result.output,
@@ -6068,43 +5552,7 @@ Before high-confidence claims: locate authoritative code via search_symbols/sear
   }
 
   private emit(event: AgentEventType): void {
-    const traceEnabled = streamTimingTraceEnabled()
-    const emitStartedAt = traceEnabled ? performance.now() : 0
-    if (traceEnabled && event.type === 'stream:start') {
-      this.streamTraceStartedAt = emitStartedAt
-      this.streamTraceLastEventAt = emitStartedAt
-      this.streamTraceRecorderDurations.clear()
-      this.streamTraceListenerDurations.clear()
-      this.streamTraceEventIntervals.clear()
-    }
-    const recorderStartedAt = traceEnabled ? performance.now() : 0
-    this.eventRecorder?.(event)
-    const listenerStartedAt = traceEnabled ? performance.now() : 0
-    for (const listener of this.listeners) {
-      listener(event)
-    }
-    if (!traceEnabled || this.streamTraceStartedAt === 0) return
-    const completedAt = performance.now()
-    const appendSample = (target: Map<string, number[]>, value: number): void => {
-      const samples = target.get(event.type) || []
-      samples.push(value)
-      target.set(event.type, samples)
-    }
-    appendSample(this.streamTraceRecorderDurations, listenerStartedAt - recorderStartedAt)
-    appendSample(this.streamTraceListenerDurations, completedAt - listenerStartedAt)
-    appendSample(this.streamTraceEventIntervals, emitStartedAt - this.streamTraceLastEventAt)
-    this.streamTraceLastEventAt = emitStartedAt
-    if (event.type !== 'stream:end') return
-    const summarizeMap = (source: Map<string, number[]>): Record<string, ReturnType<typeof summarizeTimings>> => Object.fromEntries(
-      [...source.entries()].map(([type, samples]) => [type, summarizeTimings(samples)]),
-    )
-    emitStreamTimingTrace('agent-engine', {
-      totalMs: Number((completedAt - this.streamTraceStartedAt).toFixed(3)),
-      recorder: summarizeMap(this.streamTraceRecorderDurations),
-      listeners: summarizeMap(this.streamTraceListenerDurations),
-      intervals: summarizeMap(this.streamTraceEventIntervals),
-    })
-    this.streamTraceStartedAt = 0
+    this.events.emit(event)
   }
 
 }

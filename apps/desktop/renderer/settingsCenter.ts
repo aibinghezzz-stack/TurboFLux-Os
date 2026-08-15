@@ -22,8 +22,17 @@ import {
 } from './reasoningPresentation'
 import type { ComputerControlsController } from './computerControls'
 import { formatCreditMultiplier, modelProviderMark, normalizedModelProvider } from './modelPresentation'
+import {
+  anchoredComposerPopoverPosition,
+  type ComposerPopoverPlacement,
+} from './composerPopoverPlacement'
+import {
+  currentThemePreference,
+  setThemePreference,
+  type ThemePreference,
+} from './theme'
 
-type SettingsSection = 'api' | 'mcp' | 'computer' | 'workpacks' | 'memory' | 'persona' | 'permissions' | 'advanced'
+type SettingsSection = 'appearance' | 'api' | 'mcp' | 'computer' | 'workpacks' | 'memory' | 'persona' | 'permissions' | 'advanced'
 type SettingsGroup = 'basics' | 'capabilities' | 'system'
 
 interface SettingsSectionMeta {
@@ -31,7 +40,7 @@ interface SettingsSectionMeta {
   title: string
   subtitle: string
   group: SettingsGroup
-  icon: 'model' | 'plug' | 'computer' | 'skills' | 'plugins' | 'memory' | 'persona' | 'shield' | 'advanced'
+  icon: 'appearance' | 'model' | 'plug' | 'computer' | 'skills' | 'plugins' | 'memory' | 'persona' | 'shield' | 'advanced'
   keywords: string
 }
 
@@ -43,12 +52,14 @@ interface SettingsCenterOptions {
   onClose?(): void
   onOpenAccount?(): void
   computerControls?: ComputerControlsController
+  getComposerPopoverPlacement?(): ComposerPopoverPlacement
 }
 
 export interface SettingsCenterController {
   open(section?: SettingsSection): Promise<void>
   openModelPicker(anchor: HTMLElement): Promise<void>
   openReasoningPicker(anchor: HTMLElement): Promise<void>
+  repositionComposerPicker(): void
   close(): void
   isOpen(): boolean
   handleSkillInstallJob(job: SkillMarketplaceInstallJob): void
@@ -61,6 +72,7 @@ const sectionGroups: Array<[SettingsGroup, string]> = [
 ]
 
 const sectionLabels: SettingsSectionMeta[] = [
+  { id: 'appearance', title: '外观', subtitle: '深浅主题与系统同步', group: 'basics', icon: 'appearance', keywords: '外观 主题 深色 浅色 dark light system appearance' },
   { id: 'api', title: '模型与 API', subtitle: '连接、模型与推理', group: 'basics', icon: 'model', keywords: '供应商 密钥 base url provider reasoning' },
   { id: 'persona', title: '人设与语言', subtitle: '行为风格与全局指令', group: 'basics', icon: 'persona', keywords: '语言 风格 persona prompt instructions' },
   { id: 'permissions', title: '权限与审批', subtitle: '工具边界与确认策略', group: 'basics', icon: 'shield', keywords: 'approval policy git sandbox 安全' },
@@ -102,7 +114,7 @@ function workPackStateLabel(entry: WorkPackEntry): string {
 }
 
 function workPackKindLabel(kind: WorkPackEntry['kind']): string {
-  return kind === 'workflow' ? '工作方法' : kind === 'integration' ? '工具能力' : '完整能力包'
+  return kind === 'workflow' ? '工作流插件' : kind === 'integration' ? '工具插件' : '组合插件'
 }
 
 function workPackPrimaryActionLabel(entry: WorkPackEntry): string {
@@ -176,6 +188,7 @@ function skillInstallJobMarkup(job?: SkillMarketplaceInstallJob): string {
 
 function settingsNavIcon(name: SettingsSectionMeta['icon']): string {
   const paths: Record<SettingsSectionMeta['icon'], string> = {
+    appearance: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4"/>',
     model: '<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>',
     plug: '<path d="M8 4v5m8-5v5M6 9h12v1a6 6 0 0 1-6 6v4m-3 0h6"/>',
     computer: '<rect x="3.5" y="4.5" width="17" height="12" rx="2.5"/><path d="M8 20h8M12 16.5V20"/>',
@@ -344,6 +357,8 @@ export function createSettingsCenter(
   let baseline = ''
   let section: SettingsSection = 'api'
   let selectedMcpName = ''
+  let activePickerAnchor: HTMLElement | null = null
+  let activePickerWidth = 252
   let loading: Promise<void> | null = null
   let workPackView: 'marketplace' | 'installed' = 'marketplace'
   let workPackPage: 'catalog' | 'detail' = 'catalog'
@@ -985,7 +1000,7 @@ export function createSettingsCenter(
       ${selected.error ? `<div class="skill-market-action-error">${escapeHtml(selected.error)}</div>` : ''}
       <p class="official-pack-summary">${escapeHtml(selected.description)}</p>
       <section class="official-pack-text-section"><h4>应用授权</h4><div class="official-pack-text-list">${selected.permissions.length ? selected.permissions.map(permission => `<article><strong>${escapeHtml(permission)}</strong><p>启用前会再次确认，所有操作继续遵循你的权限与审批设置。</p></article>`).join('') : '<article><strong>无需额外授权</strong><p>安装后即可使用，不会扩大当前工作区的权限范围。</p></article>'}</div></section>
-      <section class="official-pack-text-section"><h4>包含能力 <span>${selected.capabilities.length || 1}</span></h4><div class="official-pack-text-list">${(selected.capabilities.length ? selected.capabilities : [selected.description]).map(item => `<article><strong>${escapeHtml(item)}</strong><p>由能力包定义，并在适合的任务中自动参与工作。</p></article>`).join('')}</div></section>
+      <section class="official-pack-text-section"><h4>包含能力 <span>${selected.capabilities.length || 1}</span></h4><div class="official-pack-text-list">${(selected.capabilities.length ? selected.capabilities : [selected.description]).map(item => `<article><strong>${escapeHtml(item)}</strong><p>由插件定义，并在适合的任务中自动参与工作。</p></article>`).join('')}</div></section>
       <section class="official-pack-text-section official-pack-product-info"><h4>能力信息</h4><dl><div><dt>发布方</dt><dd>TurboFlux</dd></div><div><dt>版本</dt><dd>${escapeHtml(selected.version)}</dd></div><div><dt>分类</dt><dd>${escapeHtml(categoryLabel(selected.category))}</dd></div><div><dt>类型</dt><dd>${workPackKindLabel(selected.kind)}</dd></div></dl></section>
     </div>` : '<div class="official-market-empty"><strong>没有找到匹配的插件</strong><p>试试更换关键词或分类。</p></div>'
     const featured = entries.find(entry => entry.featured) || entries[0]
@@ -993,8 +1008,8 @@ export function createSettingsCenter(
       <header class="official-market-header"><div><h3>插件</h3><p>安装、启用与卸载本机插件。</p></div><div class="official-market-tabs"><button data-work-pack-view="marketplace" class="${workPackView === 'marketplace' ? 'active' : ''}">可用</button><button data-work-pack-view="installed" class="${workPackView === 'installed' ? 'active' : ''}">已安装 <span>${workPacks.installed.length}</span></button></div></header>
       <div class="official-market-toolbar"><label><span>⌕</span><input id="work-pack-search" value="${escapeHtml(workPackSearch)}" placeholder="搜索能力"></label><button class="settings-secondary" id="work-pack-refresh">刷新</button></div>
       <div class="official-market-categories">${categories.map(category => `<button data-work-pack-category="${escapeHtml(category)}" class="${category === workPackCategory ? 'active' : ''}">${escapeHtml(category)}</button>`).join('')}</div>
-      <section class="official-market-section"><div class="official-market-section-head"><div><span>${workPackView === 'installed' ? '你的能力' : '可用能力'}</span><h4>${workPackView === 'installed' ? '已安装的能力包' : '本机可用的能力'}</h4></div><small>${entries.length} 项</small></div><div class="official-pack-grid">${entries.map(entry => `<article class="official-pack-card"><button class="official-pack-card-open" data-work-pack-open="${escapeHtml(entry.id)}">${workPackIconMarkup(entry)}<span class="official-pack-card-copy"><strong>${escapeHtml(entry.name)}</strong><small>${escapeHtml(entry.description)}</small><i>${escapeHtml(categoryLabel(entry.category))}</i></span></button><footer><span class="state-${escapeHtml(entry.installState)}">${workPackStateLabel(entry)}</span><button class="official-pack-action" data-work-pack-primary="${escapeHtml(entry.id)}" ${workPackBusyId ? 'disabled' : ''}>${workPackPrimaryActionLabel(entry)}</button></footer></article>`).join('') || '<div class="official-market-empty"><strong>这里还没有能力包</strong><p>可用的能力包会显示在这里。</p></div>'}</div></section>
-      <footer class="official-market-note"><strong>本地管理</strong><span>能力包在本机安装与运行，随时可以卸载。</span></footer>
+      <section class="official-market-section"><div class="official-market-section-head"><div><span>${workPackView === 'installed' ? '你的插件' : '可用插件'}</span><h4>${workPackView === 'installed' ? '已安装的插件' : '本机可用的插件'}</h4></div><small>${entries.length} 项</small></div><div class="official-pack-grid">${entries.map(entry => `<article class="official-pack-card"><button class="official-pack-card-open" data-work-pack-open="${escapeHtml(entry.id)}">${workPackIconMarkup(entry)}<span class="official-pack-card-copy"><strong>${escapeHtml(entry.name)}</strong><small>${escapeHtml(entry.description)}</small><i>${escapeHtml(categoryLabel(entry.category))}</i></span></button><footer><span class="state-${escapeHtml(entry.installState)}">${workPackStateLabel(entry)}</span><button class="official-pack-action" data-work-pack-primary="${escapeHtml(entry.id)}" ${workPackBusyId ? 'disabled' : ''}>${workPackPrimaryActionLabel(entry)}</button></footer></article>`).join('') || '<div class="official-market-empty"><strong>这里还没有插件</strong><p>可用的插件会显示在这里。</p></div>'}</div></section>
+      <footer class="official-market-note"><strong>本地管理</strong><span>插件在本机安装与运行，可启停；非内置插件可以卸载。</span></footer>
     </div>`
     content.innerHTML = `<div class="skill-page work-pack-page">${workPackPage === 'detail' ? detail : catalog}</div>`
 
@@ -1062,7 +1077,7 @@ export function createSettingsCenter(
       if (!next) return
       workPacks = next
       settings = await bridge.getSettings(false)
-      options.showToast(entry.installed ? '能力包已启用' : '能力包已安装并可用')
+      options.showToast(entry.installed ? '插件已启用' : '插件已安装并可用')
     } catch (error) {
       options.showToast(error instanceof Error ? error.message : String(error))
     } finally {
@@ -1081,7 +1096,7 @@ export function createSettingsCenter(
     try {
       workPacks = await bridge.setWorkPackEnabled(id, enabled)
       settings = await bridge.getSettings(false)
-      options.showToast(enabled ? '能力包已启用' : '能力包已停用')
+      options.showToast(enabled ? '插件已启用' : '插件已停用')
     } catch (error) {
       options.showToast(error instanceof Error ? error.message : String(error))
     } finally {
@@ -1098,7 +1113,7 @@ export function createSettingsCenter(
     try {
       workPacks = await bridge.uninstallWorkPack(id)
       settings = await bridge.getSettings(false)
-      options.showToast('能力包已卸载')
+      options.showToast('插件已卸载')
     } catch (error) {
       options.showToast(error instanceof Error ? error.message : String(error))
     } finally {
@@ -1190,13 +1205,44 @@ export function createSettingsCenter(
     }))
   }
 
+  function renderAppearance(): void {
+    const activeTheme = currentThemePreference()
+    const themeChoices: Array<{ id: ThemePreference; title: string; description: string }> = [
+      { id: 'system', title: '跟随系统', description: '自动匹配 macOS 的浅色或深色外观。' },
+      { id: 'light', title: '浅色', description: '明亮、中性的工作台，适合日间环境。' },
+      { id: 'dark', title: '深色', description: '低眩光深色工作台，适合夜间与长时间工作。' },
+    ]
+    content.innerHTML = `
+      <div class="appearance-page">
+        <div class="settings-page-intro"><div><h3>主题</h3><p>浅色与深色使用同一套语义层级、状态颜色和可读性标准，切换立即生效。</p></div></div>
+        <div class="theme-choice-grid" role="radiogroup" aria-label="界面主题">
+          ${themeChoices.map(choice => `<button class="theme-choice ${choice.id === activeTheme ? 'selected' : ''}" type="button" role="radio" aria-checked="${choice.id === activeTheme}" data-theme-choice="${choice.id}">
+            <span class="theme-choice-preview theme-choice-preview-${choice.id}" aria-hidden="true"><i></i><b></b><em></em></span>
+            <span class="theme-choice-copy"><strong>${choice.title}</strong><small>${choice.description}</small></span>
+            <span class="theme-choice-check" aria-hidden="true">${choice.id === activeTheme ? '✓' : ''}</span>
+          </button>`).join('')}
+        </div>
+        <div class="settings-footnote"><span>i</span><p>选择“跟随系统”时，TurboFlux 会实时响应系统外观变化，并在下次启动时保持该选择。</p></div>
+      </div>`
+    content.querySelectorAll<HTMLButtonElement>('[data-theme-choice]').forEach(button => button.addEventListener('click', () => {
+      const preference = button.dataset.themeChoice as ThemePreference
+      setThemePreference(preference)
+      renderAppearance()
+      options.showToast(`已切换为${preference === 'system' ? '跟随系统' : preference === 'light' ? '浅色' : '深色'}主题`)
+    }))
+  }
+
   function renderSection(): void {
-    if (!settings || !draft) return
     overlay.dataset.section = section
     content.dataset.section = section
     overlay.querySelectorAll<HTMLButtonElement>('[data-settings-section]').forEach(button => button.classList.toggle('active', button.dataset.settingsSection === section))
     const label = sectionLabels.find(item => item.id === section)!
     overlay.querySelector('#settings-title')!.textContent = label.title
+    if (section === 'appearance') {
+      renderAppearance()
+      return
+    }
+    if (!settings || !draft) return
     if (section === 'api') renderApi()
     if (section === 'mcp') renderMcp()
     if (section === 'computer') options.computerControls?.renderSettings(content)
@@ -1242,6 +1288,10 @@ export function createSettingsCenter(
     overlay.setAttribute('aria-hidden', 'false')
     content.innerHTML = '<div class="settings-loading">正在读取设置…</div>'
     requestAnimationFrame(() => backButton.focus({ preventScroll: true }))
+    if (section === 'appearance') {
+      renderSection()
+      return
+    }
     try {
       await ensureSettings(true)
       renderSection()
@@ -1261,6 +1311,7 @@ export function createSettingsCenter(
     overlay.setAttribute('aria-hidden', 'true')
     popover.classList.remove('visible')
     popover.setAttribute('aria-hidden', 'true')
+    activePickerAnchor = null
     app.querySelectorAll<HTMLElement>('#model-pill, #reasoning-tab').forEach(anchor => anchor.setAttribute('aria-expanded', 'false'))
     options.onClose?.()
     const focusTarget = previousFocus
@@ -1276,21 +1327,34 @@ export function createSettingsCenter(
 
   function positionModelPicker(anchor: HTMLElement, mainWidth = 252): void {
     const rect = anchor.getBoundingClientRect()
-    const desiredLeft = rect.left + ((rect.width - mainWidth) / 2)
-    const left = Math.min(Math.max(14, desiredLeft), window.innerWidth - mainWidth - 14)
+    const position = anchoredComposerPopoverPosition(
+      rect,
+      { width: window.innerWidth, height: window.innerHeight },
+      mainWidth,
+      options.getComposerPopoverPlacement?.() || 'above',
+    )
+    activePickerAnchor = anchor
+    activePickerWidth = mainWidth
     popover.classList.remove('submenu-left')
-    popover.style.left = `${left}px`
-    popover.style.width = `${mainWidth}px`
+    popover.dataset.placement = position.placement
+    popover.style.left = `${position.left}px`
+    popover.style.width = `${position.width}px`
     popover.style.right = 'auto'
-    popover.style.top = 'auto'
-    popover.style.bottom = `${Math.max(42, window.innerHeight - rect.top + 8)}px`
-    popover.style.maxHeight = 'none'
-    popover.style.transformOrigin = 'bottom right'
+    popover.style.top = position.top === null ? 'auto' : `${position.top}px`
+    popover.style.bottom = position.bottom === null ? 'auto' : `${position.bottom}px`
+    popover.style.maxHeight = `${position.maxHeight}px`
+    popover.style.transformOrigin = position.transformOrigin
+  }
+
+  function repositionComposerPicker(): void {
+    if (!popover.classList.contains('visible') || !activePickerAnchor?.isConnected) return
+    positionModelPicker(activePickerAnchor, activePickerWidth)
   }
 
   function hidePicker(): void {
     popover.classList.remove('visible')
     popover.setAttribute('aria-hidden', 'true')
+    activePickerAnchor = null
     app.querySelectorAll<HTMLElement>('#model-pill, #reasoning-tab').forEach(item => item.setAttribute('aria-expanded', 'false'))
   }
 
@@ -1520,10 +1584,20 @@ export function createSettingsCenter(
   overlay.querySelector('#settings-back')?.addEventListener('click', close)
   overlay.querySelector('#settings-cancel')?.addEventListener('click', close)
   saveButton.addEventListener('click', () => void save())
-  overlay.querySelectorAll<HTMLButtonElement>('[data-settings-section]').forEach(button => button.addEventListener('click', () => {
+  overlay.querySelectorAll<HTMLButtonElement>('[data-settings-section]').forEach(button => button.addEventListener('click', async () => {
     section = button.dataset.settingsSection as SettingsSection
     content.scrollTop = 0
-    renderSection()
+    if (section === 'appearance' || (settings && draft)) {
+      renderSection()
+      return
+    }
+    content.innerHTML = '<div class="settings-loading">正在读取设置…</div>'
+    try {
+      await ensureSettings(true)
+      renderSection()
+    } catch (error) {
+      content.innerHTML = `<div class="settings-empty"><strong>设置读取失败</strong><p>${escapeHtml(error instanceof Error ? error.message : String(error))}</p></div>`
+    }
   }))
   searchInput.addEventListener('input', () => filterNavigation(searchInput.value))
   searchInput.addEventListener('keydown', event => {
@@ -1565,9 +1639,11 @@ export function createSettingsCenter(
     if (!popover.contains(target) && !(target instanceof Element && target.closest('#model-pill, #reasoning-tab'))) {
       popover.classList.remove('visible')
       popover.setAttribute('aria-hidden', 'true')
+      activePickerAnchor = null
       app.querySelectorAll<HTMLElement>('#model-pill, #reasoning-tab').forEach(anchor => anchor.setAttribute('aria-expanded', 'false'))
     }
   })
+  window.addEventListener('resize', repositionComposerPicker)
 
   function handleSkillInstallJob(job: SkillMarketplaceInstallJob): void {
     if (workPacks) {
@@ -1579,5 +1655,5 @@ export function createSettingsCenter(
     if (isOpen() && section === 'workpacks') renderWorkPacks()
   }
 
-  return { open, openModelPicker, openReasoningPicker, close, isOpen, handleSkillInstallJob }
+  return { open, openModelPicker, openReasoningPicker, repositionComposerPicker, close, isOpen, handleSkillInstallJob }
 }

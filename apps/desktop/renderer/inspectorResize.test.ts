@@ -12,8 +12,8 @@ import {
 
 describe('inspector resize interaction', () => {
   it('uses responsive defaults and hard width bounds', () => {
-    expect(defaultInspectorWidth(1_440)).toBe(662)
-    expect(defaultInspectorWidth(2_000)).toBe(760)
+    expect(defaultInspectorWidth(1_440)).toBe(360)
+    expect(defaultInspectorWidth(2_000)).toBe(420)
     expect(maximumInspectorWidth(1_000)).toBe(460)
     expect(clampInspectorWidth(100, 1_000)).toBe(INSPECTOR_MINIMUM_WIDTH)
     expect(clampInspectorWidth(900, 1_000)).toBe(460)
@@ -35,8 +35,8 @@ describe('inspector resize interaction', () => {
   })
 
   it('resets with Home, clamps keyboard changes, and ignores other keys', () => {
-    expect(inspectorWidthFromKey(500, 'Home', false, 1_440)).toBe(662)
-    expect(inspectorWidthFromKey(420, 'ArrowRight', true, 1_440)).toBe(420)
+    expect(inspectorWidthFromKey(500, 'Home', false, 1_440)).toBe(360)
+    expect(inspectorWidthFromKey(320, 'ArrowRight', true, 1_440)).toBe(320)
     expect(inspectorWidthFromKey(640, 'ArrowLeft', true, 1_440)).toBe(688)
     expect(inspectorWidthFromKey(600, 'Enter', false, 1_440)).toBeNull()
   })

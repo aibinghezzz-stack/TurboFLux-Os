@@ -112,6 +112,37 @@ describe('McpClient local system plugins', () => {
     })
   })
 
+  it('forwards stable Agent execution identity to local system plugins', async () => {
+    const client = new McpClient()
+    let receivedOptions: unknown
+    client.registerLocalServer({
+      name: 'browser',
+      tools: [{ name: 'open', description: 'Open', inputSchema: { type: 'object', properties: {} } }],
+      handler: async (_toolName, _args, options) => {
+        receivedOptions = options
+        return { ok: true }
+      },
+    })
+
+    await client.callTool('browser', 'open', {}, {
+      execution: {
+        conversationId: 'conversation-1',
+        runId: 'run-1',
+        toolCallId: 'tool-1',
+        itemId: 'tool-1',
+      },
+    })
+
+    expect(receivedOptions).toEqual({
+      execution: {
+        conversationId: 'conversation-1',
+        runId: 'run-1',
+        toolCallId: 'tool-1',
+        itemId: 'tool-1',
+      },
+    })
+  })
+
   it('can reconnect configured servers without removing system plugins', async () => {
     const client = new McpClient()
     client.registerLocalServer({

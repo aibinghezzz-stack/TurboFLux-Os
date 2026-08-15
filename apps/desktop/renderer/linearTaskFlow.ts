@@ -8,7 +8,7 @@ import {
   toolDisplayName,
 } from './richContent'
 import type { TaskFlowNode, TaskFlowProjectionState } from './taskFlowProjection'
-import { toolIcon, type ToolIconKind } from './toolIcons'
+import { deepSeekHarnessIcon, type DeepSeekHarnessIconKind } from './deepSeekHarnessIcons'
 
 export type LinearTaskFlowItem =
   | { key: string; kind: 'node'; node: TaskFlowNode }
@@ -22,6 +22,7 @@ export interface LinearTaskFlowTool {
   call: ToolCall
   result?: ToolResult
   onPreviewDiff?: (change: ChangeSummary) => void
+  onOpenBrowser?: () => void
 }
 
 export interface LinearTaskFlowRendererOptions {
@@ -310,7 +311,7 @@ function createReasoningNode(node: TaskFlowNode): HTMLElement {
   leading.className = 'linear-disclosure-leading linear-reasoning-leading'
   const icon = document.createElement('span')
   icon.className = 'linear-reasoning-icon'
-  icon.innerHTML = toolIcon('think')
+  icon.innerHTML = deepSeekHarnessIcon('think')
   const hoverChevron = disclosureChevron()
   hoverChevron.classList.add('linear-reasoning-hover-chevron')
   leading.append(icon, hoverChevron)
@@ -441,7 +442,7 @@ function taskPlanSummary(call: ToolCall, result?: ToolResult): { title: string; 
   }
 }
 
-export function toolIconKind(name: string): ToolIconKind {
+export function deepSeekHarnessToolIconKind(name: string): DeepSeekHarnessIconKind {
   const normalized = name.toLowerCase()
   if (isTaskPlanTool(normalized) || /todo|checklist/.test(normalized)) return 'checklist'
   if (/ask|question/.test(normalized)) return 'question'
@@ -453,7 +454,9 @@ export function toolIconKind(name: string): ToolIconKind {
   return 'sparkle'
 }
 
-
+function toolIcon(name: string): string {
+  return deepSeekHarnessIcon(deepSeekHarnessToolIconKind(name))
+}
 
 function toolPresentation(node: TaskFlowNode, tool: LinearTaskFlowTool): {
   title: string
@@ -526,7 +529,7 @@ function createToolNode(node: TaskFlowNode, tool: LinearTaskFlowTool): HTMLEleme
   const icon = document.createElement('span')
   icon.className = 'linear-tool-icon'
   icon.dataset.toolName = tool.call.name
-  icon.innerHTML = toolIcon(toolIconKind(tool.call.name))
+  icon.innerHTML = toolIcon(tool.call.name)
   const hoverChevron = disclosureChevron()
   hoverChevron.classList.add('linear-tool-hover-chevron')
   leading.append(icon, hoverChevron)
@@ -569,11 +572,12 @@ function createToolNode(node: TaskFlowNode, tool: LinearTaskFlowTool): HTMLEleme
   body.append(bodyInner)
   root.append(row, body)
   toggleDisclosure(root, false)
-  row.addEventListener('click', () => {
+  row.onclick = () => {
+    tool.onOpenBrowser?.()
     const expanded = !root.classList.contains('expanded')
     root.dataset.userExpanded = String(expanded)
     toggleDisclosure(root, expanded)
-  })
+  }
   return root
 }
 
@@ -586,7 +590,7 @@ function updateToolNode(root: HTMLElement, node: TaskFlowNode, tool: LinearTaskF
   root.dataset.toolId = node.callId || tool.call.id
   const icon = root.querySelector<HTMLElement>('.linear-tool-icon')
   if (icon && icon.dataset.toolName !== tool.call.name) {
-    icon.innerHTML = toolIcon(toolIconKind(tool.call.name))
+    icon.innerHTML = toolIcon(tool.call.name)
     icon.dataset.toolName = tool.call.name
   }
   root.querySelector<HTMLElement>('.linear-disclosure-title')!.textContent = presentation.title
@@ -616,6 +620,15 @@ function updateToolNode(root: HTMLElement, node: TaskFlowNode, tool: LinearTaskF
     }
   } else {
     preview?.remove()
+  }
+  const row = root.querySelector<HTMLButtonElement>(':scope > .linear-tool-row')
+  if (row) {
+    row.onclick = () => {
+      tool.onOpenBrowser?.()
+      const expanded = !root.classList.contains('expanded')
+      root.dataset.userExpanded = String(expanded)
+      toggleDisclosure(root, expanded)
+    }
   }
   return true
 }
@@ -652,7 +665,8 @@ function toolGroupSummary(item: Extract<LinearTaskFlowItem, { kind: 'tool-group'
 }
 
 function createToolGroupEntry(node: TaskFlowNode, options: LinearTaskFlowRendererOptions, index: number): HTMLDetailsElement {
-  const presentation = toolPresentation(node, options.resolveTool(node))
+  const tool = options.resolveTool(node)
+  const presentation = toolPresentation(node, tool)
   const detail = document.createElement('details')
   detail.className = 'linear-tool-group-entry'
   detail.dataset.taskFlowNodeId = node.id
@@ -662,6 +676,7 @@ function createToolGroupEntry(node: TaskFlowNode, options: LinearTaskFlowRendere
   const entryDetail = document.createElement('span')
   entryDetail.textContent = presentation.summary
   entrySummary.append(entryTitle, entryDetail)
+  entrySummary.onclick = () => tool.onOpenBrowser?.()
   const entryBody = document.createElement('div')
   entryBody.className = 'linear-tool-group-entry-body'
   appendToolDetailSection(entryBody, '输入', presentation.input)
@@ -676,10 +691,13 @@ function updateToolGroupEntry(
   options: LinearTaskFlowRendererOptions,
   index: number,
 ): void {
-  const presentation = toolPresentation(node, options.resolveTool(node))
+  const tool = options.resolveTool(node)
+  const presentation = toolPresentation(node, tool)
   detail.dataset.taskFlowNodeId = node.id
-  detail.querySelector<HTMLElement>(':scope > summary > strong')!.textContent = `${index + 1}. ${presentation.title}`
-  detail.querySelector<HTMLElement>(':scope > summary > span')!.textContent = presentation.summary
+  const summary = detail.querySelector<HTMLElement>(':scope > summary')!
+  summary.querySelector<HTMLElement>(':scope > strong')!.textContent = `${index + 1}. ${presentation.title}`
+  summary.querySelector<HTMLElement>(':scope > span')!.textContent = presentation.summary
+  summary.onclick = () => tool.onOpenBrowser?.()
   const body = detail.querySelector<HTMLElement>(':scope > .linear-tool-group-entry-body')!
   updateToolDetailSection(body, '输入', presentation.input)
   updateToolDetailSection(body, '输出', presentation.output)
@@ -702,7 +720,7 @@ function createToolGroupNode(
   icon.className = 'linear-tool-icon'
   const firstToolName = item.nodes[0]?.toolName || item.nodes[0]?.content || 'browser__observe'
   icon.dataset.toolName = firstToolName
-  icon.innerHTML = toolIcon(toolIconKind(firstToolName))
+  icon.innerHTML = toolIcon(firstToolName)
   const hoverChevron = disclosureChevron()
   hoverChevron.classList.add('linear-tool-hover-chevron')
   leading.append(icon, hoverChevron)
@@ -724,11 +742,12 @@ function createToolGroupNode(
   body.append(bodyInner)
   root.append(row, body)
   toggleDisclosure(root, false)
-  row.addEventListener('click', () => {
+  row.onclick = () => {
+    options.resolveTool(item.nodes.at(-1)!).onOpenBrowser?.()
     const expanded = !root.classList.contains('expanded')
     root.dataset.userExpanded = String(expanded)
     toggleDisclosure(root, expanded)
-  })
+  }
   return root
 }
 
@@ -748,10 +767,19 @@ function updateToolGroupNode(
   const toolName = firstNode.toolName || firstNode.content || 'browser__observe'
   if (icon && icon.dataset.toolName !== toolName) {
     icon.dataset.toolName = toolName
-    icon.innerHTML = toolIcon(toolIconKind(toolName))
+    icon.innerHTML = toolIcon(toolName)
   }
   root.querySelector<HTMLElement>('.linear-disclosure-title')!.textContent = browserToolGroupTitle(item.group, firstPresentation.title, item.nodes.length)
   root.querySelector<HTMLElement>('.linear-disclosure-summary')!.textContent = toolGroupSummary(item, status, firstPresentation.summary)
+  const row = root.querySelector<HTMLButtonElement>(':scope > .linear-tool-row')
+  if (row) {
+    row.onclick = () => {
+      options.resolveTool(item.nodes.at(-1)!).onOpenBrowser?.()
+      const expanded = !root.classList.contains('expanded')
+      root.dataset.userExpanded = String(expanded)
+      toggleDisclosure(root, expanded)
+    }
+  }
 
   const body = root.querySelector<HTMLElement>('.linear-tool-group-body')!
   const desired = new Set(item.nodes.map(node => node.id))
