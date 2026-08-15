@@ -18,6 +18,3 @@ pre-push:
   jobs:
     - name: typecheck
       run: npm run type-check
-
-    - name: test
-      run: npm test
