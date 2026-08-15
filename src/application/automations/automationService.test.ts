@@ -45,7 +45,7 @@ describe('AutomationService', () => {
     expect(service.claimDue(root, { now: Date.parse(onceAt) })).toHaveLength(1)
     expect(service.get(once.id)).toMatchObject({ enabled: false, nextRunAt: undefined })
 
-    const weekly = service.create({ name: 'Weekly', prompt: 'Run weekly', workspacePath: root, schedule: { kind: 'weekly', weekday: 1, time: '09:30' } }).automations[0]
+    const weekly = service.create({ name: 'Weekly', prompt: 'Run weekly', workspacePath: root, schedule: { kind: 'weekly', weekday: 1, time: '09:30' }, timezone: 'Asia/Shanghai' }).automations[0]
     expect(new Date(weekly.nextRunAt!).toISOString()).toBe(new Date('2026-08-10T09:30:00+08:00').toISOString())
   })
 
