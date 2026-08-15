@@ -1,0 +1,121 @@
+import React, { useEffect, useState } from 'react'
+import { Box, Text } from 'ink'
+import { useTerminalSize } from '../../hooks/useTerminalSize'
+import { SPINNER_INTERVAL_MS } from '../spinner/constants'
+import { useTheme } from '../../theme/index'
+import { TURBOFLUX_ACCENTS } from '../../theme/palette'
+import { prefersReducedMotion } from '../../platform/terminalAttention'
+
+interface AgentActivityLineProps {
+  active: boolean
+  persistent?: boolean
+  width?: number
+}
+
+interface AgentActivitySegment {
+  text: string
+  color: string
+  bold: boolean
+}
+
+const SHIMMER_STEP = 2
+const BASE_COLOR = TURBOFLUX_ACCENTS.cyanDeep
+const SWEEP_COLORS = [
+  TURBOFLUX_ACCENTS.cyanDeep,
+  TURBOFLUX_ACCENTS.cyanMid,
+  TURBOFLUX_ACCENTS.cyan,
+  TURBOFLUX_ACCENTS.neonGreen,
+  TURBOFLUX_ACCENTS.cyan,
+  TURBOFLUX_ACCENTS.cyanMid,
+  TURBOFLUX_ACCENTS.cyanDeep,
+]
+
+export function AgentActivityLine({ active, persistent = false, width: requestedWidth }: AgentActivityLineProps) {
+  const { columns } = useTerminalSize()
+  const theme = useTheme()
+  const reducedMotion = prefersReducedMotion()
+  const [frame, setFrame] = useState(0)
+
+  useEffect(() => {
+    if (!active || reducedMotion) return
+    setFrame(0)
+
+    const interval = setInterval(() => {
+      setFrame(value => (value + 1) % 1000000)
+    }, SPINNER_INTERVAL_MS)
+
+    return () => clearInterval(interval)
+  }, [active, reducedMotion])
+
+  if (!active && !persistent) return null
+
+  const width = Math.max(0, Math.min(requestedWidth ?? columns - 3, columns - 3))
+  const segments = active
+    ? reducedMotion
+      ? [{ text: '-'.repeat(width), color: theme.brand, bold: false }]
+      : buildAgentActivityLineFrame(width, frame)
+    : [{ text: '─'.repeat(width), color: theme.subtle, bold: false }]
+
+  return (
+    <Box flexShrink={0} height={1}>
+      {segments.map((segment, index) => (
+        <Text key={`${index}-${segment.color}-${segment.bold ? 'bold' : 'base'}`} color={segment.color} bold={segment.bold}>
+          {segment.text}
+        </Text>
+      ))}
+    </Box>
+  )
+}
+
+export function buildAgentActivityLineFrame(
+  width: number,
+  frame: number,
+): AgentActivitySegment[] {
+  const safeWidth = Math.max(0, Math.floor(width))
+  if (safeWidth === 0) return []
+
+  const shimmerWidth = Math.max(10, Math.min(26, Math.floor(safeWidth * 0.2)))
+  const travelWidth = safeWidth + shimmerWidth
+  const head = positiveModulo(frame * SHIMMER_STEP, travelWidth)
+  const chars: AgentActivitySegment[] = []
+
+  for (let index = 0; index < safeWidth; index += 1) {
+    const distance = head - index
+    const sweepIndex = distance >= 0 && distance < shimmerWidth
+      ? Math.min(SWEEP_COLORS.length - 1, Math.floor((distance / shimmerWidth) * SWEEP_COLORS.length))
+      : -1
+    const isCore = sweepIndex === 3
+    chars.push(sweepIndex >= 0
+      ? {
+          text: '-',
+          color: SWEEP_COLORS[sweepIndex]!,
+          bold: isCore,
+        }
+      : {
+          text: '-',
+          color: BASE_COLOR,
+          bold: false,
+        })
+  }
+
+  return mergeSegments(chars)
+}
+
+function mergeSegments(chars: AgentActivitySegment[]): AgentActivitySegment[] {
+  const segments: AgentActivitySegment[] = []
+
+  for (const char of chars) {
+    const previous = segments[segments.length - 1]
+    if (previous && previous.color === char.color && previous.bold === char.bold) {
+      previous.text += char.text
+    } else {
+      segments.push({ ...char })
+    }
+  }
+
+  return segments
+}
+
+function positiveModulo(value: number, divisor: number): number {
+  return ((value % divisor) + divisor) % divisor
+}

@@ -1,0 +1,93 @@
+{
+  "name": "turboflux",
+  "version": "1.0.1",
+  "description": "TurboFlux - open-source local agent workbench: terminal TUI, desktop app, and shared kernel",
+  "main": "dist/cli/index.js",
+  "bin": {
+    "turboflux": "bin/turboflux.mjs",
+    "tf": "bin/turboflux.mjs"
+  },
+  "files": [
+    "bin/turboflux.mjs",
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "author": "TurboFlux",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "node-pty@1.1.0": true
+  },
+  "scripts": {
+    "dev": "npm run dev:cli",
+    "dev:cli": "tsx watch src/cli/index.ts",
+    "dev:once": "tsx src/cli/index.ts",
+    "start": "tsx src/cli/index.ts",
+    "link:tf": "node scripts/link-local-cli.mjs",
+    "unlink:tf": "node scripts/link-local-cli.mjs --remove",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "postinstall": "node scripts/fix-node-pty-permissions.mjs",
+    "prepack": "npm run verify:boundary && npm run clean && npm run build",
+    "build": "tsc -p tsconfig.open-source.json && node scripts/fix-dist-imports.mjs",
+    "build:core": "npm run build --prefix packages/agent-core",
+    "type-check:core": "npm run type-check --prefix packages/agent-core",
+    "pack:core": "npm pack --dry-run ./packages/agent-core",
+    "verify:boundary": "node scripts/verify-public-boundary.mjs",
+    "type-check": "tsc --noEmit",
+    "test": "vitest run",
+    "perf:startup": "node scripts/startup-benchmark.mjs",
+    "test:flow": "vitest run src/application/flow src/application/conversations src/cli/state src/cli/telemetry src/cli/platform/terminalAttention.test.ts src/cli/hooks/useTerminalSize.test.ts src/cli/components/App.test.ts src/cli/components/TranscriptViewport.test.ts src/cli/components/transcriptWindowing.test.ts src/cli/components/markdown/index.test.ts src/cli/components/layout/StartupAnimation.test.ts src/cli/components/input/terminalInputStateMachine.test.ts src/cli/components/input/PromptInput.test.ts src/cli/commands/index.test.ts src/core/agentEngine.approval.test.ts src/core/agentEngine.input.test.ts src/core/runtime/approvalCoordinator.test.ts src/core/runtime/capabilityBoundary.test.ts src/core/runtime/sessionRegistry.test.ts",
+    "perf:flow": "tsx scripts/flow-performance.ts",
+    "smoke:tui": "tsx scripts/tui-flow-smoke.ts",
+    "baseline:terminal": "tsx scripts/terminal-flow-baseline.ts",
+    "ci:flow": "npm run type-check && npm test && npm run perf:flow && npm run smoke:tui && npm run build",
+    "bun:type-check": "bunx tsc --noEmit",
+    "bun:test": "bunx vitest run",
+    "bun:build": "bunx tsc",
+    "runtime:info": "tsx scripts/runtime-info.ts",
+    "runtime:info:bun": "bun scripts/runtime-info.ts",
+    "runtime:smoke": "tsx scripts/runtime-smoke.ts",
+    "runtime:smoke:bun": "bun scripts/runtime-smoke.ts",
+    "dev:desktop": "npm run dev --workspace @turboflux/desktop",
+    "build:desktop": "npm run build --workspace @turboflux/desktop",
+    "type-check:desktop": "npm run type-check --workspace @turboflux/desktop",
+    "test:desktop": "npm run test --workspace @turboflux/desktop",
+    "install:desktop": "npm install --prefix apps/desktop"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/react": "^19.2.15",
+    "@xterm/headless": "^6.0.0",
+    "node-pty": "^1.1.0",
+    "typescript": "^5.3.3",
+    "vitest": "^4.1.7"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "chalk": "^5.6.2",
+    "cli-truncate": "^6.0.0",
+    "commander": "^12.1.0",
+    "diff": "^9.0.0",
+    "figures": "^6.1.0",
+    "highlight.js": "^11.11.1",
+    "ink": "^7.0.3",
+    "ink-text-input": "^6.0.0",
+    "inquirer": "^14.0.2",
+    "js-tiktoken": "^1.0.21",
+    "marked": "^18.0.4",
+    "react": "^19.2.6",
+    "string-width": "^8.2.1",
+    "strip-ansi": "^7.2.0",
+    "tsx": "^4.22.2",
+    "undici": "^7.29.0"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ]
+}

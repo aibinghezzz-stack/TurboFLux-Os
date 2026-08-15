@@ -1,0 +1,23 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/kernel/**/*",
+    "src/application/**/*",
+    "src/cli/**/*",
+    "src/core/**/*",
+    "src/platform/**/*",
+    "src/server/**/*",
+    "src/shared/**/*",
+    "src/state/**/*",
+    "src/tools/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "dist-desktop",
+    "src/desktop/**/*",
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "claude-code-reference"
+  ]
+}

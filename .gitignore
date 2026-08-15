@@ -1,0 +1,32 @@
+# --- macOS ---
+.DS_Store
+*.swp
+*~
+
+# --- Node ---
+node_modules/
+dist/
+dist-desktop/
+coverage/
+*.tsbuildinfo
+
+# --- 构建产物 ---
+apps/*/generated/
+release/
+*.app/
+
+# --- 运行时与本地状态 ---
+.turboflux/
+.turboflux-e2e/
+*.log
+*.db
+*.sqlite*
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+
+# --- 编辑器 ---
+.vscode/
+.idea/

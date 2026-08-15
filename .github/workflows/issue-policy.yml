@@ -1,0 +1,42 @@
+name: Issue policy
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  policy:
+    name: External PR policy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check authorship
+        id: authorship
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          # 技术团队成员名单（GitHub 用户名）
+          TEAM_MEMBERS='aibinghezzz-stack'
+          AUTHOR="$(echo "$PR_AUTHOR" | tr '[:upper:]' '[:lower:]')"
+          IS_MEMBER=0
+          for member in $TEAM_MEMBERS; do
+            if [ "$AUTHOR" = "$(echo "$member" | tr '[:upper:]' '[:lower:]')" ]; then
+              IS_MEMBER=1
+              break
+            fi
+          done
+          echo "member=$IS_MEMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Close external pull request
+        if: steps.authorship.outputs.member != '1'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr close "$PR_NUMBER" --comment \
+            "感谢你的 Pull Request。TurboFlux 由核心技术团队负责开发，目前不接受外部 Pull Request。如果你发现了问题或有功能建议，请在 Issues 中提交（https://github.com/aibinghezzz-stack/TurboFLux-Os/issues），我们会评估并跟进。"
