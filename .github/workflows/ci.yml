@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PRIMARY_NODE_VERSION: '22'
+
+jobs:
+  lint:
+    name: Lint (oxlint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Lint
+        run: npx oxlint --config .oxlintrc.json
+
+  typecheck:
+    name: Type check (kernel + TUI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Type check
+        run: npm run type-check
+
+  test:
+    name: Test (kernel + TUI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Test
+        run: npm test
+
+  build:
+    name: Build (kernel + TUI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Build agent-core
+        run: npm run build:core
+      - name: Build TUI
+        run: npm run build
+
+  desktop-typecheck:
+    name: Type check (desktop)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Build agent-core
+        run: npm run build:core
+      - name: Type check desktop
+        run: npm run type-check:desktop
+
+  desktop-test:
+    name: Test (desktop)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Build agent-core
+        run: npm run build:core
+      - name: Test desktop
+        run: npm run test:desktop
+
+  boundary:
+    name: Public boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify public boundary
+        run: node scripts/verify-public-boundary.mjs

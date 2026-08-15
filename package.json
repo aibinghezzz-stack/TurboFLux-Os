@@ -57,13 +57,22 @@
     "build:desktop": "npm run build --workspace @turboflux/desktop",
     "type-check:desktop": "npm run type-check --workspace @turboflux/desktop",
     "test:desktop": "npm run test --workspace @turboflux/desktop",
-    "install:desktop": "npm install --prefix apps/desktop"
+    "install:desktop": "npm install --prefix apps/desktop",
+    "lint": "oxlint --config .oxlintrc.json",
+    "lint:staged": "oxlint --config .oxlintrc.staged.json",
+    "knip": "knip",
+    "check:duplicates": "jscpd --config .jscpd.json",
+    "ci": "npm run lint && npm run type-check && npm test && npm run build && npm run verify:boundary && npm run type-check:desktop && npm run test:desktop"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
     "@types/react": "^19.2.15",
     "@xterm/headless": "^6.0.0",
+    "jscpd": "^5.0.15",
+    "knip": "^6.32.2",
+    "lefthook": "^2.1.10",
     "node-pty": "^1.1.0",
+    "oxlint": "^1.78.0",
     "typescript": "^5.3.3",
     "vitest": "^4.1.7"
   },
