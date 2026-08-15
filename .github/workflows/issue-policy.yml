@@ -24,7 +24,7 @@ jobs:
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           # 技术团队成员名单（GitHub 用户名）
-          TEAM_MEMBERS='aibinghezzz-stack'
+          TEAM_MEMBERS='aibinghezzz-stack dependabot[bot]'
           AUTHOR="$(echo "$PR_AUTHOR" | tr '[:upper:]' '[:lower:]')"
           IS_MEMBER=0
           for member in $TEAM_MEMBERS; do
