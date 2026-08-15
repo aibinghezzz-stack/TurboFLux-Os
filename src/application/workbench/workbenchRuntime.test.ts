@@ -961,7 +961,7 @@ describe('WorkbenchRuntime', () => {
       unsubscribe()
       await runtime.destroy()
     }
-  })
+  }, 15_000)
 
   it('fully stops an active run before rewinding and resending an edited message', async () => {
     const workspacePath = mkdtempSync(join(tmpdir(), 'turboflux-workbench-'))
@@ -1025,7 +1025,7 @@ describe('WorkbenchRuntime', () => {
       await new Promise<void>(resolve => setImmediate(resolve))
       await runtime.destroy()
     }
-  })
+  }, 15_000)
 
   it('restores the original branch when an edited message cannot launch', async () => {
     const workspacePath = mkdtempSync(join(tmpdir(), 'turboflux-workbench-'))
@@ -1146,7 +1146,7 @@ describe('WorkbenchRuntime', () => {
     } finally {
       await runtime.destroy()
     }
-  })
+  }, 15_000)
 
   it('cancels a background automation without overwriting its terminal state', async () => {
     const workspacePath = mkdtempSync(join(tmpdir(), 'turboflux-workbench-'))

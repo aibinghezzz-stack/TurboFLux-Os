@@ -50,7 +50,6 @@ jobs:
   test:
     name: Test (kernel + TUI)
     runs-on: ubuntu-latest
-    continue-on-error: true  # 已知 4 个环境性失败（nodeToolExecutor 分页 + workbenchRuntime 超时），修复后移除
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,6 +58,8 @@ jobs:
         with:
           node-version: ${{ env.PRIMARY_NODE_VERSION }}
           cache: npm
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
       - run: npm ci
       - name: Test
         run: npm test
