@@ -78,7 +78,7 @@ describe('AgentEngine background subagent tools', () => {
       expect(runtime.subAgentTaskManager.getTask(agentId!)?.runtimeTask.status).toBe('running')
       expect(await dispatchTool('list_agents', {})).toContain(`[running] ${agentId}`)
 
-      for (let attempt = 0; !resolveFetch && attempt < 50; attempt += 1) {
+      for (let attempt = 0; typeof resolveFetch === 'undefined' && attempt < 50; attempt += 1) {
         await new Promise(resolve => setTimeout(resolve, 5))
       }
       expect(resolveFetch).toBeTypeOf('function')
