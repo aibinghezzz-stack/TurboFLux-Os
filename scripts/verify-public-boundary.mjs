@@ -6,9 +6,9 @@ const privatePrefixes = [
   'src/desktop/',
   'control-plane/',
   'apps/desktop/generated/',
-  'apps/desktop/build/',
-  'apps/desktop/entitlements.mac.plist',
-  'apps/desktop/electron-builder.yml',
+  '.turboflux/',
+  '.turboflux-e2e/',
+  'release/',
 ]
 
 function gitFiles(args) {
