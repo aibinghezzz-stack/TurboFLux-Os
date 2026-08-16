@@ -404,8 +404,12 @@ export class ComputerSystem implements RuntimePausableSystemCapability<ComputerS
     const screenState = process.platform === 'darwin'
       ? permissionState(systemPreferences.getMediaAccessStatus('screen'))
       : 'unavailable'
+    const applicationAccessibilityGranted = process.platform === 'darwin'
+      && systemPreferences.isTrustedAccessibilityClient(false)
     const accessibilityGranted = this.lastNative?.accessibilityTrusted === true
     const postEventGranted = this.lastNative?.postEventTrusted === true
+    const accessibilityRestartRequired = driverAvailable && applicationAccessibilityGranted && !accessibilityGranted
+    const postEventRestartRequired = driverAvailable && applicationAccessibilityGranted && !postEventGranted
     const accessibilityState = accessibilityGranted
       ? 'granted'
       : driverAvailable
@@ -422,17 +426,23 @@ export class ComputerSystem implements RuntimePausableSystemCapability<ComputerS
         screenState === 'granted' || !this.requestedPermissions.has('screen-recording') ? screenState : 'denied',
         'Privacy_ScreenCapture',
       ),
-      accessibility: this.permissionStatus('accessibility', accessibilityState, 'Privacy_Accessibility'),
-      postEvent: this.permissionStatus('post-event', postEventState, 'Privacy_Accessibility'),
+      accessibility: this.permissionStatus('accessibility', accessibilityState, 'Privacy_Accessibility', accessibilityRestartRequired),
+      postEvent: this.permissionStatus('post-event', postEventState, 'Privacy_Accessibility', postEventRestartRequired),
     }
   }
 
-  private permissionStatus(kind: ComputerPermissionStatus['kind'], state: ComputerPermissionState, route: string): ComputerPermissionStatus {
+  private permissionStatus(
+    kind: ComputerPermissionStatus['kind'],
+    state: ComputerPermissionState,
+    route: string,
+    restartRequired = false,
+  ): ComputerPermissionStatus {
     return {
       kind,
       state,
-      canRequest: Boolean(this.driver) && this.driverHealthy && (state === 'not-determined' || state === 'unknown'),
+      canRequest: !restartRequired && Boolean(this.driver) && this.driverHealthy && (state === 'not-determined' || state === 'unknown'),
       settingsPath: `x-apple.systempreferences:com.apple.preference.security?${route}`,
+      restartRequired: restartRequired || undefined,
     }
   }
 

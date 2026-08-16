@@ -13,14 +13,24 @@ files:
   - preload.cjs
   - runtimeHost.ts
   - productExperience.ts
+  - conversationPolicy.ts
+  - contextUsageRecovery.ts
+  - desktopTypes.ts
+  - historyRewrite.ts
+  - runtimeTransitionPolicy.ts
+  - taskTitleGenerator.ts
+  - taskTitleApplyGate.ts
   - browser/**/*
   - computer/**/*.ts
   - computer/**/*.cjs
+  - systems/**/*.ts
   - package.json
   - node_modules/**/*
 extraResources:
   - from: ../../dist-desktop/renderer
     to: renderer
+  - from: ../../apps/website/public/turboflux-app-icon.png
+    to: renderer/turboflux-app-icon.png
   - from: generated/native
     to: native
 afterPack: build/sign-desktop-helper.mjs

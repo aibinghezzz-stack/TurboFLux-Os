@@ -46,7 +46,8 @@ const permissionDefinitions: Array<{
   },
 ]
 
-function permissionStateLabel(state: ComputerPermissionState): string {
+function permissionStateLabel(permission: ComputerPermissionStatus): string {
+  if (permission.restartRequired) return '已授权，重新打开后生效'
   return ({
     granted: '已开启',
     denied: '需要在系统设置中开启',
@@ -54,7 +55,7 @@ function permissionStateLabel(state: ComputerPermissionState): string {
     'not-determined': '尚未授权',
     unknown: '等待检查',
     unavailable: '当前系统不可用',
-  } as Record<ComputerPermissionState, string>)[state]
+  } as Record<ComputerPermissionState, string>)[permission.state]
 }
 
 function permissionReady(permission: ComputerPermissionStatus): boolean {
@@ -249,6 +250,7 @@ export function createComputerControls(
       const definition = permissionDefinitions.find(item => item.kind === kind)!
       const granted = permissionReady(next.permissions[definition.key])
       if (result.outcome === 'cancelled') options.showToast('已取消权限申请')
+      else if (result.outcome === 'restart-required') options.showToast('权限已经开启，重新打开 TurboFlux 后生效')
       else if (granted) options.showToast(`${definition.title}已开启`)
       else options.showToast('macOS 未完成授权，可点击“打开设置”继续')
     } catch (error) {
@@ -281,6 +283,11 @@ export function createComputerControls(
     if (permissionReady(permission)) {
       button.textContent = '已开启'
       button.disabled = true
+      return button
+    }
+    if (permission.restartRequired) {
+      button.textContent = '重新打开'
+      button.addEventListener('click', () => void bridge.computerRelaunch())
       return button
     }
     if (permission.canRequest && permission.state !== 'denied') {
@@ -339,7 +346,9 @@ export function createComputerControls(
     const nextDefinition = permissionDefinitions.find(definition => !permissionReady(snapshot!.permissions[definition.key]))
     overviewDetail.textContent = snapshot.available
       ? nextDefinition
-        ? `下一步：允许${nextDefinition.title}。完成后回到 TurboFlux，状态会自动更新。`
+        ? snapshot.permissions[nextDefinition.key].restartRequired
+          ? `${nextDefinition.title}已经授权，需要重新打开 TurboFlux 让原生操控进程继承权限。`
+          : `下一步：允许${nextDefinition.title}。完成后回到 TurboFlux，状态会自动更新。`
         : '系统权限已经齐全；接管、继续与紧急停止始终由你控制。'
       : '当前版本先提供 macOS 原生实现，其他平台会保持能力关闭。'
     overviewCopy.append(overviewTitle, overviewDetail)
@@ -349,11 +358,15 @@ export function createComputerControls(
       const guideButton = document.createElement('button')
       guideButton.className = 'settings-primary computer-guide-action'
       guideButton.disabled = permissionPending || nextPermission.state === 'unavailable' || nextPermission.state === 'restricted'
-      guideButton.textContent = nextPermission.canRequest && nextPermission.state !== 'denied'
+      guideButton.textContent = nextPermission.restartRequired
+        ? '重新打开 TurboFlux'
+        : nextPermission.canRequest && nextPermission.state !== 'denied'
         ? readyCount === 0 ? '开始原生引导' : '继续原生引导'
         : '打开下一项设置'
       guideButton.addEventListener('click', () => void (
-        nextPermission.canRequest && nextPermission.state !== 'denied'
+        nextPermission.restartRequired
+          ? bridge.computerRelaunch()
+          : nextPermission.canRequest && nextPermission.state !== 'denied'
           ? requestPermission(nextPermission.kind)
           : openPermissionSettings(nextPermission.kind)
       ))
@@ -375,7 +388,7 @@ export function createComputerControls(
       const rowDetail = document.createElement('small')
       rowDetail.textContent = definition.detail
       const state = document.createElement('b')
-      state.textContent = permissionStateLabel(permission.state)
+      state.textContent = permissionStateLabel(permission)
       rowCopy.append(rowTitle, rowDetail, state)
       row.append(status, rowCopy, permissionButton(permission))
       list.append(row)

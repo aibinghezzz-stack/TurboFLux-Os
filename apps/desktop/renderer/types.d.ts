@@ -72,6 +72,7 @@ declare global {
     computerRefresh(): Promise<ComputerSystemSnapshot>
     computerRequestPermission(kind: ComputerPermissionKind): Promise<ComputerPermissionRequestResult>
     computerOpenPermissionSettings(kind: ComputerPermissionKind): Promise<boolean>
+    computerRelaunch(): Promise<boolean>
     computerTakeControl(): Promise<ComputerSystemSnapshot>
     computerResumeControl(): Promise<ComputerSystemSnapshot>
     computerEmergencyStop(): Promise<ComputerSystemSnapshot>

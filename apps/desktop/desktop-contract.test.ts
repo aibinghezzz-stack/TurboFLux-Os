@@ -5,8 +5,28 @@ const readDesktopFile = (name: string) =>
   readFileSync(new URL(`./${name}`, import.meta.url), 'utf8')
 
 describe('desktop surface contract', () => {
+  it('packages every local module imported by the desktop runtime host', () => {
+    const builder = readDesktopFile('electron-builder.yml')
+
+    for (const file of [
+      'runtimeHost.ts',
+      'productExperience.ts',
+      'conversationPolicy.ts',
+      'contextUsageRecovery.ts',
+      'desktopTypes.ts',
+      'historyRewrite.ts',
+      'runtimeTransitionPolicy.ts',
+      'taskTitleGenerator.ts',
+      'taskTitleApplyGate.ts',
+    ]) {
+      expect(builder).toContain(`- ${file}`)
+    }
+    expect(builder).toContain('- systems/**/*.ts')
+  })
+
   it('keeps the Electron boundary isolated', () => {
     const main = readDesktopFile('main.mjs')
+    const builder = readDesktopFile('electron-builder.yml')
 
     expect(main).toContain('contextIsolation: true')
     expect(main).toContain('nodeIntegration: false')
@@ -19,6 +39,10 @@ describe('desktop surface contract', () => {
     expect(main).toContain('assertTrustedIpcSender(event)')
     expect(main).toContain("event.sender !== mainWindow.webContents")
     expect(main).toContain("actual.protocol === 'file:' && fileURLToPath(actual) === rendererEntryPath")
+    expect(main).toContain("join(process.resourcesPath, 'renderer', 'turboflux-app-icon.png')")
+    expect(main).not.toContain('turboflux-mark-VUo_7eDU.png')
+    expect(builder).toContain('from: ../../apps/website/public/turboflux-app-icon.png')
+    expect(builder).toContain('to: renderer/turboflux-app-icon.png')
     expect(main).not.toContain('requireProductAccess: true')
     expect(main).toContain('assertRuntimeResetAllowed()')
     expect(main).toContain('runtimeHost.transitionBlocker()')
@@ -80,6 +104,7 @@ describe('desktop surface contract', () => {
     expect(preload).toContain("runAutomation: id => ipcRenderer.invoke('desktop:run-automation', id)")
     expect(preload).toContain("retryAutomationRun: (id, runId) => ipcRenderer.invoke('desktop:retry-automation-run', id, runId)")
     expect(preload).toContain("cancelAutomationRun: id => ipcRenderer.invoke('desktop:cancel-automation-run', id)")
+    expect(preload).toContain("computerRelaunch: () => ipcRenderer.invoke('desktop:computer-relaunch')")
     expect(preload).toContain("importFiles: paths => ipcRenderer.invoke('desktop:import-files', paths)")
     expect(preload).toContain("importClipboardImage: (base64, mime, filename) => ipcRenderer.invoke('desktop:import-clipboard-image', base64, mime, filename)")
     expect(preload).toContain("previewArtifact: (id, purpose = 'full') => ipcRenderer.invoke('desktop:preview-artifact', id, purpose)")
@@ -169,10 +194,8 @@ describe('desktop surface contract', () => {
     expect(renderer).not.toContain('createTaskDurationLabel')
     expect(renderer).toContain('snapshotRefreshInFlight')
     expect(renderer).toContain('createCommandPalette(app, bridge')
-    expect(renderer).toContain("createWorkOverviewSection('工作面')")
-    expect(renderer).toContain("createWorkOverviewSection('浏览现场'")
-    expect(renderer).toContain("createWorkOverviewSection('协作现场')")
-    expect(renderer).toContain("createWorkOverviewSection('交付记录'")
+    expect(renderer).not.toContain('createWorkOverviewSection')
+    expect(renderer).not.toContain('renderWorkOverview')
     expect(renderer).toContain("'danger-full-access': '完整访问'")
     expect(renderer).not.toContain('任务、Agent 与 Flow')
     expect(renderer).toContain("value.startsWith('/')")
@@ -208,14 +231,25 @@ describe('desktop surface contract', () => {
     expect(renderer).not.toContain('composer-start-guidance')
     expect(renderer).not.toContain('研究资料并整理清晰结论')
     expect(renderer).not.toContain('class="composer-rail"')
-    expect(renderer).toContain('id="browser-workspace"')
-    expect(renderer).toContain('id="inspector-overview-back"')
-    expect(renderer).toContain("type InspectorTab = 'overview' | 'activity' | 'outputs' | 'browser' | 'context' | 'git'")
-    expect(renderer).toContain("type BrowserDisplayMode = 'workspace' | 'inspector' | null")
+    expect(renderer).not.toContain('id="browser-workspace"')
+    expect(renderer).not.toContain('id="inspector-overview-back"')
+    expect(renderer).toContain('? { x: 0, y: 0, width: 0, height: 0 }')
+    expect(renderer).toContain("type InspectorTab = 'activity' | 'outputs' | 'browser' | 'context' | 'git'")
+    expect(renderer).toContain("{ tab: 'activity', label: '任务', iconName: 'activity' }")
+    expect(renderer).not.toContain("{ tab: 'overview', label: '概览'")
+    expect(renderer).toContain('class="inspector-primary-tabs"')
+    expect(renderer).toContain('class="inspector-utility-tabs"')
+    expect(renderer).toContain('openInspector(inspectorLandingTab())')
+    expect(renderer).not.toContain('BrowserDisplayMode')
+    expect(renderer).not.toContain('browserDisplayMode')
+    expect(renderer).toContain("if (browserSnapshot?.activity || browserSnapshot?.tabs.length) return 'browser'")
     expect(renderer).toContain("button.addEventListener('click', () => void openBrowserInInspector(view.previewUrl!))")
     expect(renderer).toContain('id="task-companion"')
     expect(renderer).toContain('id="work-plan-dock"')
-    expect(renderer).toContain('id="inspector-toggle" title="打开工作侧栏">${icon(\'panel\')}</button>')
+    expect(renderer.match(/id="inspector-toggle"/g) ?? []).toHaveLength(1)
+    expect(renderer).toContain('class="icon-button work-drawer-toggle" id="inspector-toggle"')
+    expect(renderer.indexOf('</main>')).toBeLessThan(renderer.indexOf('id="inspector-toggle"'))
+    expect(renderer).not.toContain('id="inspector-close"')
     expect(renderer).toContain("if (item.kind === 'preview' && preview?.url) void openBrowserInInspector(preview.url)")
     expect(renderer).toContain("if (item.kind === 'browser' && browser?.tabId) void openBrowserTabInInspector(browser.tabId)")
     expect(renderer).toContain('onOpenBrowser: isBuiltInBrowserTool(call.name)')
@@ -223,20 +257,21 @@ describe('desktop surface contract', () => {
     expect(linearTaskFlow).toContain('onOpenBrowser?: () => void')
     expect(linearTaskFlow).toContain('tool.onOpenBrowser?.()')
     expect(linearTaskFlow).toContain('options.resolveTool(item.nodes.at(-1)!).onOpenBrowser?.()')
-    const browserStateRenderer = renderer.slice(renderer.indexOf('function renderBrowserSnapshot'), renderer.indexOf('async function openBrowser()'))
+    const browserStateRenderer = renderer.slice(renderer.indexOf('function renderBrowserSnapshot'), renderer.indexOf('async function refreshConversationSystemSnapshots'))
     expect(browserStateRenderer).toContain("openInspector('browser')")
     expect(browserStateRenderer).toContain('agentToolCallId !== lastAutoOpenedBrowserToolCallId')
     expect(renderer).toContain('function updateInspectorBrowser(snapshot: BrowserSystemSnapshot): boolean')
-    expect(browserStateRenderer).toContain("else if (currentInspectorTab === 'browser' && !updateInspectorBrowser(snapshot)) renderInspector()")
+    expect(browserStateRenderer).toContain("if (currentInspectorTab === 'browser' && !updateInspectorBrowser(snapshot)) renderInspector()")
     expect(browserStateRenderer).not.toContain("currentInspectorTab === 'browser' && !inspectorAddressFocused")
     expect(renderer).toContain("renderBrowserTabs(tabs, true)")
     expect(renderer).toContain("addressForm.className = 'inspector-browser-address-form'")
+    expect(renderer).not.toContain("expand.title = '在工作区展开'")
     expect(renderer).toContain("newTab.addEventListener('click'")
     expect(renderer).toContain("event.metaKey && event.key.toLowerCase() === 't' && browserSnapshot?.visible")
     expect(renderer).toContain("inspectorContent.querySelector<HTMLInputElement>('.inspector-browser-address')")
     expect(renderer).not.toContain('Agent 浏览器')
     expect(renderer).toContain('bridge.browserSetBounds')
-    expect(renderer).toContain('if (!rect || rect.width < 2 || rect.height < 2) return')
+    expect(renderer).toContain('? { x: 0, y: 0, width: 0, height: 0 }')
     expect(styles).toContain('.inspector-browser-surface')
     expect(styles).toContain('.inspector-browser-tabbar')
     expect(styles).toContain('.browser-activity-pill[hidden]')
@@ -271,8 +306,14 @@ describe('desktop surface contract', () => {
     expect(renderer).toContain("aria-keyshortcuts=\"ArrowLeft ArrowRight Shift+ArrowLeft Shift+ArrowRight Home\"")
     expect(styles).toMatch(/\.inspector-resize-handle \{[^}]*width: 24px/)
     expect(styles).toContain('.inspector-resize-handle:focus-visible::after')
-    expect(styles).toContain('scrollbar-gutter: stable')
+    expect(styles).toContain('--conversation-content-rail: calc(var(--content-rail) - (2 * var(--transcript-inline-padding)))')
+    expect(styles).toContain('width: min(calc(100% - (2 * var(--transcript-inline-padding))), var(--conversation-content-rail))')
+    expect(styles).toMatch(/\.conversation-mode \.transcript\.linear-task-flow \{[^}]*width: min\(100%, var\(--content-rail\)\)/)
+    expect(styles).not.toContain('width: min(100%, 748px)')
+    expect(styles).toMatch(/\.transcript \{[^}]*scrollbar-gutter: auto/)
+    expect(styles).not.toMatch(/\.message-row\.user \.message-content \{[^}]*margin-right/)
     expect(styles).toContain('.desktop-shell.inspector-open .main-panel { margin-right: var(--work-panel-width); }')
+    expect(styles).toContain('.work-drawer-toggle { position: absolute; z-index: 170; top: 15px; right: 18px;')
     expect(styles).not.toContain('.desktop-shell.inspector-open .conversation-mode .transcript')
     expect(styles).toContain('.inspector { position: absolute; z-index: 150; top: 0; right: 0;')
     expect(styles).toContain('container-type: inline-size')
@@ -457,7 +498,7 @@ describe('desktop surface contract', () => {
 
   it('registers browser artifacts and isolates plugin code', () => {
     const main = readDesktopFile('main.mjs')
-    const coreManifest = JSON.parse(readFileSync(new URL('../../node_modules/@turboflux/agent-core/package.json', import.meta.url), 'utf8'))
+    const coreManifest = JSON.parse(readFileSync(new URL('./node_modules/@turboflux/agent-core/package.json', import.meta.url), 'utf8'))
 
     expect(main).toContain("event?.type === 'artifact-ready' && event.path")
     expect(main).toContain("const source = event.kind === 'download' ? 'browser-download' : 'browser'")
@@ -479,7 +520,9 @@ describe('desktop surface contract', () => {
     expect(main).toContain("if (kind === 'screen-recording') return app.isPackaged ? 'TurboFlux' : 'Electron'")
     expect(main).toContain("'TurboFlux Computer Helper（系统也可能显示 TurboFluxComputerHelper）'")
     expect(main).toContain("outcome: 'cancelled'")
-    expect(main).toContain("outcome: computerPermissionStatus(snapshot, kind).state === 'granted' ? 'granted' : 'needs-settings'")
+    expect(main).toContain('outcome: computerPermissionOutcome(snapshot, kind)')
+    expect(main).toContain("if (status.restartRequired) return 'restart-required'")
+    expect(main).toContain("ipcMain.handle('desktop:computer-relaunch'")
     expect(main).toContain("mainWindow.on('focus'")
     expect(main).toContain('computerSystem?.refresh()')
   })
@@ -602,7 +645,7 @@ describe('desktop surface contract', () => {
     expect(vite).toContain('port: 5174')
     expect(vite).toContain('strictPort: true')
     expect(devScript).toContain('const closeWatchers = [mainEntry, preloadEntry, runtimeHostEntry]')
-    expect(devScript).toContain("const publicRepositoryRoot = repositoryRoot")
+    expect(devScript).toContain('const publicRepositoryRoot = repositoryRoot')
     expect(devScript).toContain("for (const directory of ['application', 'core', 'kernel', 'platform', 'shared', 'state', 'tools'])")
     expect(devScript).toContain("for (const directory of ['browser', 'computer', 'systems'])")
     expect(devScript).toContain('buildSharedCore()')

@@ -55,7 +55,7 @@ const electronMocks = vi.hoisted(() => {
     workArea: { x: -800, y: -200, width: 800, height: 480 },
     scaleFactor: 2,
   }
-  const state = { mediaStatus: 'granted' }
+  const state = { mediaStatus: 'granted', accessibilityTrusted: false }
   const getSources = vi.fn(async () => [{
     display_id: String(display.id),
     thumbnail: new MockNativeImage(1_600, 1_000),
@@ -84,7 +84,7 @@ vi.mock('electron', () => ({
   shell: { openExternal: electronMocks.openExternal },
   systemPreferences: {
     getMediaAccessStatus: () => electronMocks.state.mediaStatus,
-    isTrustedAccessibilityClient: () => true,
+    isTrustedAccessibilityClient: () => electronMocks.state.accessibilityTrusted,
   },
   app: { getPath: () => tmpdir() },
 }))
@@ -327,6 +327,7 @@ afterAll(() => {
 
 beforeEach(() => {
   electronMocks.state.mediaStatus = 'granted'
+  electronMocks.state.accessibilityTrusted = false
   electronMocks.getSources.mockClear()
   electronMocks.openExternal.mockClear()
   electronMocks.createFromBitmap.mockClear()
@@ -443,6 +444,26 @@ describe('ComputerSystem', () => {
       state: 'denied',
       canRequest: false,
       settingsPath: expect.stringContaining('Privacy_Accessibility'),
+    })
+  })
+
+  it('reports a relaunch requirement when macOS granted the app but the helper still has stale trust', async () => {
+    const harness = createHarness()
+    harness.driver.accessibilityGranted = false
+    harness.driver.postEventGranted = false
+    electronMocks.state.accessibilityTrusted = true
+
+    const snapshot = await harness.system.refresh()
+
+    expect(snapshot.permissions.accessibility).toMatchObject({
+      state: 'not-determined',
+      canRequest: false,
+      restartRequired: true,
+    })
+    expect(snapshot.permissions.postEvent).toMatchObject({
+      state: 'not-determined',
+      canRequest: false,
+      restartRequired: true,
     })
   })
 

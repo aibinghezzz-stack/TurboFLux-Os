@@ -101,9 +101,19 @@ import { SerializedAsyncQueue, SingleFlightGuard } from './interactionConcurrenc
 import { projectWorkspaceConversationGroups, UNGROUPED_WORKSPACE_KEY } from './workspaceConversationProjection'
 import { composerPopoverPlacement } from './composerPopoverPlacement'
 
-type InspectorTab = 'overview' | 'activity' | 'outputs' | 'browser' | 'context' | 'git'
-type BrowserDisplayMode = 'workspace' | 'inspector' | null
+type InspectorTab = 'activity' | 'outputs' | 'browser' | 'context' | 'git'
 type ProductTitlePhase = 'typing' | 'holding' | 'deleting' | 'switching'
+
+const INSPECTOR_PRIMARY_NAVIGATION: ReadonlyArray<{ tab: InspectorTab; label: string; iconName: string }> = [
+  { tab: 'activity', label: '任务', iconName: 'activity' },
+  { tab: 'browser', label: '浏览器', iconName: 'browser' },
+  { tab: 'outputs', label: '产物', iconName: 'outputs' },
+]
+
+const INSPECTOR_UTILITY_NAVIGATION: ReadonlyArray<{ tab: InspectorTab; label: string; iconName: string }> = [
+  { tab: 'context', label: '上下文', iconName: 'context' },
+  { tab: 'git', label: '版本', iconName: 'git' },
+]
 
 const productTitleVariants = [
   { word: 'Work', className: 'is-work' },
@@ -138,6 +148,14 @@ const icon = (name: string) => {
     chevron: '<svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>',
     command: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="m9 9 2.5 3L9 15m4.5 0H16"/></svg>',
     panel: '<svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="16" rx="3"/><path d="M15 4v16"/></svg>',
+    overview: '<svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="7" height="7" rx="1.5"/><rect x="13.5" y="4" width="7" height="4" rx="1.5"/><rect x="13.5" y="11" width="7" height="9" rx="1.5"/><rect x="3.5" y="14" width="7" height="6" rx="1.5"/></svg>',
+    activity: '<svg viewBox="0 0 24 24"><path d="M3.5 12h4l2.2-5.5 4.1 11 2.3-5.5h4.4"/><path d="M4 5.5h16M4 18.5h16" opacity=".35"/></svg>',
+    browser: '<svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M3.5 9h17"/><circle cx="7" cy="6.75" r=".65"/><circle cx="10" cy="6.75" r=".65"/></svg>',
+    outputs: '<svg viewBox="0 0 24 24"><path d="M7 3.5h7l4 4V20H7z"/><path d="M14 3.5V8h4M9.5 12h5M9.5 15.5h5"/></svg>',
+    context: '<svg viewBox="0 0 24 24"><path d="m12 3.5 8 4-8 4-8-4z"/><path d="m4 12 8 4 8-4M4 16.5l8 4 8-4"/></svg>',
+    git: '<svg viewBox="0 0 24 24"><circle cx="7" cy="5" r="2"/><circle cx="17" cy="7" r="2"/><circle cx="7" cy="19" r="2"/><path d="M7 7v10M9 12h3a5 5 0 0 0 5-5"/></svg>',
+    preview: '<svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="12" rx="2.5"/><path d="M8 20h8M12 16.5V20"/><path d="m10 8.5 5 2.5-5 2.5z"/></svg>',
+    parallel: '<svg viewBox="0 0 24 24"><path d="M6 5v14M18 5v14M6 8h4a2 2 0 0 1 2 2v4a2 2 0 0 0 2 2h4"/><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="18" cy="19" r="2"/></svg>',
     stop: '<svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>',
     pause: '<svg viewBox="0 0 24 24"><path d="M9 6v12M15 6v12"/></svg>',
     play: '<svg viewBox="0 0 24 24"><path d="m9 6 9 6-9 6z"/></svg>',
@@ -187,9 +205,6 @@ export function mountWorkbench(app: HTMLDivElement): void {
         <header class="topbar">
           <div class="breadcrumb"><strong id="breadcrumb-title">工作台</strong></div>
           <section class="task-companion" id="task-companion" aria-live="polite" aria-hidden="true"></section>
-          <div class="topbar-actions">
-            <button class="icon-button" id="inspector-toggle" title="打开工作侧栏">${icon('panel')}</button>
-          </div>
         </header>
 
         <section class="work-plan-dock" id="work-plan-dock" aria-live="polite" hidden></section>
@@ -224,38 +239,21 @@ export function mountWorkbench(app: HTMLDivElement): void {
 
         <section class="product-view" id="product-view" aria-hidden="true"></section>
 
-        <section class="browser-workspace" id="browser-workspace" aria-hidden="true">
-          <div class="browser-tabbar">
-            <div class="browser-tabs" id="browser-tabs"></div>
-            <button class="browser-tab-action" id="browser-new-tab" title="新建标签页">${icon('plus')}</button>
-            <span class="browser-activity-pill" id="browser-activity" hidden>${icon('spark')}<span>浏览器工作中</span></span>
-            <button class="browser-tab-action" id="browser-close" title="关闭浏览器">${icon('close')}</button>
-          </div>
-          <div class="browser-toolbar">
-            <div class="browser-nav-actions">
-              <button id="browser-back" title="后退">${icon('back')}</button>
-              <button id="browser-forward" title="前进">${icon('forward')}</button>
-              <button id="browser-reload" title="刷新">${icon('reload')}</button>
-            </div>
-            <form class="browser-address-form" id="browser-address-form">
-              ${icon('globe')}
-              <input id="browser-address" aria-label="浏览器地址" autocomplete="off" spellcheck="false" placeholder="搜索或输入网址">
-              <span class="browser-security-label">隔离浏览</span>
-            </form>
-            <button class="browser-toolbar-action" id="browser-open-external" title="在默认浏览器中打开">${icon('external')}</button>
-          </div>
-          <div class="browser-native-surface" id="browser-native-surface"><div><span>${icon('globe')}</span><p>浏览器正在准备</p></div></div>
-        </section>
-
       </main>
 
+      <button class="icon-button work-drawer-toggle" id="inspector-toggle" title="打开工作抽屉" aria-label="打开工作抽屉" aria-pressed="false">${icon('panel')}</button>
       <button class="inspector-scrim" id="inspector-scrim" aria-label="关闭侧栏"></button>
       <aside class="inspector" id="inspector-panel">
         <button class="inspector-resize-handle" id="inspector-resize-handle" type="button" role="separator" aria-orientation="vertical" aria-label="调整验收视图宽度" aria-describedby="inspector-resize-help" aria-keyshortcuts="ArrowLeft ArrowRight Shift+ArrowLeft Shift+ArrowRight Home" title="拖动调整宽度；方向键微调；Shift 加速；Home 或双击恢复默认"></button>
         <span class="visually-hidden" id="inspector-resize-help">拖动调整宽度；方向键微调；按住 Shift 加速；按 Home 或双击恢复默认。</span>
-        <div class="inspector-header"><div class="inspector-heading"><button class="inspector-heading-back" id="inspector-overview-back" title="返回工作概览">${icon('back')}</button><h2 id="inspector-title">工作</h2></div><button class="icon-button" id="inspector-close">${icon('close')}</button></div>
+        <div class="inspector-header">
+          <nav class="inspector-nav" aria-label="工作抽屉">
+            <div class="inspector-primary-tabs">${INSPECTOR_PRIMARY_NAVIGATION.map(item => `<button class="inspector-tab${item.tab === 'activity' ? ' active' : ''}" data-tab="${item.tab}" title="${item.label}">${icon(item.iconName)}<span>${item.label}</span></button>`).join('')}</div>
+            <div class="inspector-utility-tabs">${INSPECTOR_UTILITY_NAVIGATION.map(item => `<button class="inspector-tab inspector-utility-tab" data-tab="${item.tab}" title="${item.label}" aria-label="${item.label}">${icon(item.iconName)}<span>${item.label}</span></button>`).join('')}</div>
+          </nav>
+        </div>
         <div class="inspector-content" id="inspector-content"></div>
-        <div class="inspector-bottom"><div class="security-badge"><span>⌁</span><div><strong>本机执行</strong><small id="runtime-policy">正在准备</small></div></div></div>
+        <div class="inspector-bottom"><div class="security-badge"><span>${icon('computer')}</span><div><strong>本机执行</strong><small id="runtime-policy">正在准备</small></div></div></div>
       </aside>
     </div>
     <div class="toast" id="toast" role="status"></div>
@@ -284,15 +282,7 @@ export function mountWorkbench(app: HTMLDivElement): void {
   const inspectorPanel = app.querySelector<HTMLElement>('#inspector-panel')!
   const inspectorResizeHandle = app.querySelector<HTMLButtonElement>('#inspector-resize-handle')!
   const inspectorContent = app.querySelector<HTMLDivElement>('#inspector-content')!
-  const browserWorkspace = app.querySelector<HTMLElement>('#browser-workspace')!
-  const browserSurface = app.querySelector<HTMLElement>('#browser-native-surface')!
-  const browserTabs = app.querySelector<HTMLElement>('#browser-tabs')!
-  const browserAddress = app.querySelector<HTMLInputElement>('#browser-address')!
-  const browserBack = app.querySelector<HTMLButtonElement>('#browser-back')!
-  const browserForward = app.querySelector<HTMLButtonElement>('#browser-forward')!
-  const browserReload = app.querySelector<HTMLButtonElement>('#browser-reload')!
-  const browserActivity = app.querySelector<HTMLElement>('#browser-activity')!
-  const browserToggle = app.querySelector<HTMLButtonElement>('#browser-toggle')
+  const inspectorToggle = app.querySelector<HTMLButtonElement>('#inspector-toggle')!
   const taskCompanion = app.querySelector<HTMLElement>('#task-companion')!
   const productTitle = app.querySelector<HTMLElement>('#workbench-title-product')!
   const productTitleText = app.querySelector<HTMLElement>('#workbench-title-text')!
@@ -302,7 +292,7 @@ export function mountWorkbench(app: HTMLDivElement): void {
   const conversationNavigationGuard = new SingleFlightGuard()
   let currentSnapshot: WorkbenchSnapshot | null = null
   let currentMainView: 'workbench' | 'projects' | 'automations' = 'workbench'
-  let currentInspectorTab: InspectorTab = 'overview'
+  let currentInspectorTab: InspectorTab = 'activity'
   let selectedChange: ChangeSummary | null = null
   let selectedArtifactId: string | null = null
   let selectedWorkRunId: string | null = null
@@ -445,8 +435,8 @@ export function mountWorkbench(app: HTMLDivElement): void {
   })()
   let browserSnapshot: BrowserSystemSnapshot | null = null
   let lastAutoOpenedBrowserToolCallId = ''
-  let browserDisplayMode: BrowserDisplayMode = null
-  let browserModeBeforeFullScreen: BrowserDisplayMode = null
+  let browserVisibleBeforeFullScreen = false
+  let browserInspectorOpenBeforeFullScreen = false
   let fullScreenSurfaceDepth = 0
   let browserBoundsFrame: number | null = null
   let reasoningMaxTimer: number | null = null
@@ -759,14 +749,14 @@ export function mountWorkbench(app: HTMLDivElement): void {
     if (browserBoundsFrame !== null) cancelAnimationFrame(browserBoundsFrame)
     browserBoundsFrame = requestAnimationFrame(() => {
       browserBoundsFrame = null
-      const surface = browserDisplayMode === 'workspace'
-        ? browserSurface
-        : browserDisplayMode === 'inspector' && currentInspectorTab === 'browser' && shell.classList.contains('inspector-open')
-          ? inspectorContent.querySelector<HTMLElement>('.inspector-browser-surface')
-          : null
+      const surface = currentInspectorTab === 'browser' && shell.classList.contains('inspector-open')
+        ? inspectorContent.querySelector<HTMLElement>('.inspector-browser-surface')
+        : null
       const rect = surface?.getBoundingClientRect()
-      if (!rect || rect.width < 2 || rect.height < 2) return
-      void bridge.browserSetBounds({ x: rect.x, y: rect.y, width: rect.width, height: rect.height })
+      const bounds = !rect || rect.width < 2 || rect.height < 2
+        ? { x: 0, y: 0, width: 0, height: 0 }
+        : { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+      void bridge.browserSetBounds(bounds)
         .catch(error => showToast(errorMessage(error)))
     })
   }
@@ -805,24 +795,9 @@ export function mountWorkbench(app: HTMLDivElement): void {
       && fullScreenSurfaceDepth === 0
     ) {
       lastAutoOpenedBrowserToolCallId = agentToolCallId
-      browserDisplayMode = 'inspector'
       openInspector('browser')
     }
-    if (!snapshot.visible) browserDisplayMode = null
-    else if (!browserDisplayMode) browserDisplayMode = 'inspector'
-    const workspaceVisible = snapshot.visible && browserDisplayMode === 'workspace'
-    browserWorkspace.classList.toggle('visible', workspaceVisible)
-    browserWorkspace.setAttribute('aria-hidden', String(!workspaceVisible))
-    browserToggle?.classList.toggle('active', snapshot.visible)
-    renderBrowserTabs(browserTabs)
-    updateBrowserActivity(browserActivity, snapshot)
-    const active = activeBrowserTab()
-    if (document.activeElement !== browserAddress) browserAddress.value = active?.url === 'about:blank' ? '' : active?.url || ''
-    browserBack.disabled = !active?.canGoBack
-    browserForward.disabled = !active?.canGoForward
-    browserReload.classList.toggle('loading', active?.loading === true)
-    if (shell.classList.contains('inspector-open') && currentInspectorTab === 'overview') renderInspector()
-    else if (currentInspectorTab === 'browser' && !updateInspectorBrowser(snapshot)) renderInspector()
+    if (currentInspectorTab === 'browser' && !updateInspectorBrowser(snapshot)) renderInspector()
     renderTaskCompanion()
     if (snapshot.visible) scheduleBrowserBoundsSync()
   }
@@ -838,31 +813,9 @@ export function mountWorkbench(app: HTMLDivElement): void {
     if (computerResult.status === 'rejected') showToast(errorMessage(computerResult.reason))
   }
 
-  async function openBrowser() {
-    if (!bridge) return
-    try {
-      browserDisplayMode = 'workspace'
-      closeInspector()
-      renderBrowserSnapshot(await bridge.browserShow())
-    } catch (error) {
-      showToast(errorMessage(error))
-    }
-  }
-
-  function expandBrowser() {
-    if (!browserSnapshot?.visible) {
-      void openBrowser()
-      return
-    }
-    browserDisplayMode = 'workspace'
-    closeInspector()
-    renderBrowserSnapshot(browserSnapshot)
-  }
-
   async function openBrowserInInspector(url: string) {
     if (!bridge) return
     try {
-      browserDisplayMode = 'inspector'
       openInspector('browser')
       let snapshot = await bridge.browserShow()
       const active = snapshot.tabs.find(tab => tab.id === snapshot.activeTabId)
@@ -877,7 +830,6 @@ export function mountWorkbench(app: HTMLDivElement): void {
   async function openBrowserTabInInspector(tabId: string) {
     if (!bridge) return
     try {
-      browserDisplayMode = 'inspector'
       let snapshot = await bridge.browserShow()
       if (snapshot.tabs.some(tab => tab.id === tabId) && snapshot.activeTabId !== tabId) {
         snapshot = await bridge.browserActivateTab(tabId)
@@ -896,15 +848,6 @@ export function mountWorkbench(app: HTMLDivElement): void {
       renderBrowserSnapshot(latest)
       const execution = (latest.executions || []).find(candidate => candidate.toolCallId === toolCallId)
       await openBrowserTabInInspector(execution?.tabId || '')
-    } catch (error) {
-      showToast(errorMessage(error))
-    }
-  }
-
-  async function closeBrowser() {
-    if (!bridge) return
-    try {
-      renderBrowserSnapshot(await bridge.browserHide())
     } catch (error) {
       showToast(errorMessage(error))
     }
@@ -1007,7 +950,7 @@ export function mountWorkbench(app: HTMLDivElement): void {
     live.innerHTML = '<i aria-hidden="true"></i><span class="visually-hidden">任务正在进行</span>'
     taskCompanion.append(live)
     const icons: Record<TaskCompanionItemKind, string> = {
-      work: 'spark', preview: 'globe', browser: 'globe', subagents: 'spark', computer: 'computer',
+      work: 'activity', preview: 'preview', browser: 'browser', subagents: 'parallel', computer: 'computer',
     }
     for (const item of presentation.items) {
       const button = document.createElement('button')
@@ -1030,7 +973,7 @@ export function mountWorkbench(app: HTMLDivElement): void {
     showToast,
     onActivityChange: () => {
       renderTaskCompanion()
-      if (shell.classList.contains('inspector-open') && currentInspectorTab === 'overview') renderInspector()
+      if (shell.classList.contains('inspector-open') && currentInspectorTab === 'activity') renderInspector()
     },
   }) : null
 
@@ -1038,14 +981,18 @@ export function mountWorkbench(app: HTMLDivElement): void {
     if (!bridge) return
     fullScreenSurfaceDepth += 1
     if (fullScreenSurfaceDepth > 1) return
-    browserModeBeforeFullScreen = browserSnapshot?.visible ? browserDisplayMode : null
+    browserVisibleBeforeFullScreen = browserSnapshot?.visible === true
+    browserInspectorOpenBeforeFullScreen = browserVisibleBeforeFullScreen
+      && currentInspectorTab === 'browser'
+      && shell.classList.contains('inspector-open')
     closeComposerMenus()
     closeInspector()
-    if (!browserSnapshot?.visible) return
+    if (!browserVisibleBeforeFullScreen) return
     try {
       renderBrowserSnapshot(await bridge.browserHide())
     } catch (error) {
-      browserModeBeforeFullScreen = null
+      browserVisibleBeforeFullScreen = false
+      browserInspectorOpenBeforeFullScreen = false
       showToast(errorMessage(error))
     }
   }
@@ -1053,17 +1000,16 @@ export function mountWorkbench(app: HTMLDivElement): void {
   function leaveFullScreenSurface() {
     fullScreenSurfaceDepth = Math.max(0, fullScreenSurfaceDepth - 1)
     if (fullScreenSurfaceDepth > 0) return
-    const restoreMode = browserModeBeforeFullScreen
-    browserModeBeforeFullScreen = null
-    if (!restoreMode || !bridge) return
+    const restoreBrowser = browserVisibleBeforeFullScreen
+    const restoreInspector = browserInspectorOpenBeforeFullScreen
+    browserVisibleBeforeFullScreen = false
+    browserInspectorOpenBeforeFullScreen = false
+    if (!restoreBrowser || !bridge) return
     void (async () => {
       try {
-        browserDisplayMode = restoreMode
-        if (restoreMode === 'inspector') openInspector('browser')
-        else closeInspector()
         const snapshot = await bridge.browserShow()
-        browserDisplayMode = restoreMode
         renderBrowserSnapshot(snapshot)
+        if (restoreInspector) openInspector('browser')
       } catch (error) {
         showToast(errorMessage(error))
       }
@@ -2777,6 +2723,7 @@ export function mountWorkbench(app: HTMLDivElement): void {
     shell.classList.add('inspector-open')
     app.querySelectorAll('.inspector-tab').forEach(item => item.classList.toggle('active', (item as HTMLElement).dataset.tab === tab))
     renderInspector()
+    updateInspectorToggleState()
   }
 
   function closeInspector(fast = false) {
@@ -2795,6 +2742,25 @@ export function mountWorkbench(app: HTMLDivElement): void {
     selectedChange = null
     selectedArtifactId = null
     scheduleBrowserBoundsSync()
+    updateInspectorToggleState()
+  }
+
+  function inspectorLandingTab(): InspectorTab {
+    if (browserSnapshot?.activity || browserSnapshot?.tabs.length) return 'browser'
+    if (currentSnapshot?.activity.execution.currentRunId || currentSnapshot?.runtime.status === 'running') return 'activity'
+    const hasOutputs = Boolean(currentSnapshot && (
+      currentSnapshot.artifacts.artifacts.length > 0
+      || collectChanges(currentSnapshot.conversation.turns).length > 0
+    ))
+    return hasOutputs ? 'outputs' : 'activity'
+  }
+
+  function updateInspectorToggleState() {
+    const open = shell.classList.contains('inspector-open')
+    inspectorToggle.classList.toggle('active', open)
+    inspectorToggle.setAttribute('aria-pressed', String(open))
+    inspectorToggle.title = open ? '关闭工作抽屉' : '打开工作抽屉'
+    inspectorToggle.setAttribute('aria-label', inspectorToggle.title)
   }
 
   function artifactKindLabel(kind: WorkbenchSnapshot['artifacts']['artifacts'][number]['kind']): string {
@@ -2931,207 +2897,15 @@ export function mountWorkbench(app: HTMLDivElement): void {
     inspectorContent.prepend(section)
   }
 
-  function createWorkOverviewSection(label: string, count?: number, onOpen?: () => void): HTMLElement {
-    const section = document.createElement('section')
-    section.className = 'work-overview-section'
-    const header = document.createElement('header')
-    const title = document.createElement('strong')
-    title.textContent = label
-    header.append(title)
-    if (count !== undefined) {
-      const total = document.createElement('span')
-      total.textContent = String(count)
-      header.append(total)
-    }
-    if (onOpen) {
-      const open = document.createElement('button')
-      open.textContent = '查看全部'
-      open.addEventListener('click', onOpen)
-      header.append(open)
-    }
-    section.append(header)
-    return section
-  }
-
-  function createWorkOverviewRow(options: {
-    iconName: string
-    title: string
-    detail?: string
-    meta?: string
-    attention?: boolean
-    onOpen(): void
-  }): HTMLButtonElement {
-    const row = document.createElement('button')
-    row.className = `work-overview-row${options.attention ? ' attention' : ''}`
-    row.innerHTML = `${icon(options.iconName)}<span><strong></strong><small></small></span><b></b>`
-    row.querySelector('strong')!.textContent = options.title
-    const detail = row.querySelector('small')!
-    detail.textContent = options.detail || ''
-    detail.hidden = !options.detail
-    row.querySelector('b')!.textContent = options.meta || '›'
-    row.addEventListener('click', options.onOpen)
-    return row
-  }
-
-  function renderWorkOverview(snapshot: WorkbenchSnapshot): void {
-    inspectorContent.classList.add('overview-content')
-    const changes = collectChanges(snapshot.conversation.turns)
-    const artifacts = snapshot.artifacts.artifacts
-      .filter(artifact => !artifact.conversationId || artifact.conversationId === snapshot.conversation.id)
-      .sort((left, right) => right.updatedAt - left.updatedAt)
-    const previews = snapshot.activity.runtimeTasks
-      .map(task => ({ task, view: describeRuntimeTask(task) }))
-      .filter(item => item.view?.category === 'service' && item.view.previewUrl)
-      .sort((left, right) => right.task.updatedAt - left.task.updatedAt)
-    const execution = snapshot.activity.execution
-    const workRun = selectWorkRun(execution, execution.currentRunId)
-    if (workRun) {
-      const work = presentWorkRun(workRun)
-      const stage = document.createElement('button')
-      stage.className = `work-overview-stage status-${workRun.status}`
-      stage.innerHTML = '<i></i><span><strong></strong><small></small></span>'
-      stage.querySelector('strong')!.textContent = work.title
-      stage.querySelector('small')!.textContent = work.detail
-      stage.addEventListener('click', () => openInspector('activity'))
-      inspectorContent.append(stage)
-    }
-
-    if (previews.length > 0) {
-      const surfaces = createWorkOverviewSection('工作面')
-      for (const { view } of previews.slice(0, 3)) {
-        if (!view?.previewUrl) continue
-        surfaces.append(createWorkOverviewRow({
-          iconName: 'globe',
-          title: '本地预览',
-          detail: view.title,
-          meta: view.active ? '打开' : '已停止',
-          onOpen: () => view.active && void openBrowserInInspector(view.previewUrl!),
-        }))
-      }
-      inspectorContent.append(surfaces)
-    }
-
-    const researchTabs = browserResearchTabs()
-    if (researchTabs.length > 0) {
-      const activeTabId = browserSnapshot?.activeTabId || researchTabs[0].id
-      const browsing = createWorkOverviewSection('浏览现场', researchTabs.length, () => void openBrowserTabInInspector(activeTabId))
-      for (const tab of researchTabs) {
-        browsing.append(createWorkOverviewRow({
-          iconName: 'globe',
-          title: tab.title || browserSiteLabel(tab.url),
-          detail: browserSiteLabel(tab.url),
-          meta: tab.loading ? '正在加载' : tab.id === browserSnapshot?.activeTabId && browserSnapshot?.activity ? '正在浏览' : '打开',
-          attention: tab.crashed,
-          onOpen: () => void openBrowserTabInInspector(tab.id),
-        }))
-      }
-      inspectorContent.append(browsing)
-    }
-
-    const subagents = snapshot.activity.subagents
-    const computer = computerControls?.getCompanionState()
-    if (subagents.length > 0 || computer) {
-      const collaboration = createWorkOverviewSection('协作现场')
-      const running = subagents.filter(agent => ['starting', 'running'].includes(agent.status))
-      const completed = subagents.filter(agent => agent.status === 'completed')
-      if (subagents.length > 0) collaboration.append(createWorkOverviewRow({
-          iconName: 'spark',
-          title: running.length > 0 ? `${running.length} 个并行工作正在推进` : `${completed.length} 个并行工作已结束`,
-          detail: running[0]?.objective || completed[0]?.objective || `${subagents.length} 个协作任务`,
-          meta: completed.length > 0 ? `${completed.length} 完成` : '查看',
-          onOpen: () => {
-            openInspector('activity')
-          },
-        }))
-      if (computer) collaboration.append(createWorkOverviewRow({
-          iconName: 'computer',
-          title: computer.title,
-          detail: computer.detail,
-          meta: computer.attention ? '需要接管' : '进行中',
-          attention: computer.attention,
-          onOpen: () => openInspector('activity'),
-        }))
-      inspectorContent.append(collaboration)
-    }
-
-    const deliveryCount = artifacts.length + changes.length
-    if (deliveryCount > 0) {
-      const delivery = createWorkOverviewSection('交付记录', deliveryCount, () => openInspector('outputs'))
-      let visibleDelivery = 0
-      for (const artifact of artifacts) {
-        if (visibleDelivery >= 4) break
-        delivery.append(createWorkOverviewRow({
-          iconName: 'folder',
-          title: artifact.name,
-          detail: `${artifactKindLabel(artifact.kind)} · ${formatRelativeTime(artifact.updatedAt)}`,
-          onOpen: () => {
-            selectedArtifactId = artifact.id
-            openInspector('outputs')
-          },
-        }))
-        visibleDelivery += 1
-      }
-      for (const change of changes) {
-        if (visibleDelivery >= 4) break
-        delivery.append(createWorkOverviewRow({
-          iconName: 'folder',
-          title: change.path.split(/[\\/]/).at(-1) || change.path,
-          detail: `${change.path} · +${change.addedLines ?? 0} −${change.removedLines ?? 0}`,
-          onOpen: () => {
-            selectedChange = change
-            openInspector('outputs')
-          },
-        }))
-        visibleDelivery += 1
-      }
-      inspectorContent.append(delivery)
-    }
-
-    const attachments = snapshot.conversation.turns.flatMap(turn => turn.metadata?.attachments || [])
-    const sources = [...attachments.map(attachment => ({ name: attachment.filename, detail: `${Math.max(1, Math.round(attachment.size / 1024))} KB` })), ...snapshot.draft.files.map(file => ({ name: file.filename, detail: '待发送' }))]
-    if (sources.length > 0) {
-      const sourceSection = createWorkOverviewSection('任务输入', sources.length, () => openInspector('context'))
-      for (const source of sources.slice(0, 4)) sourceSection.append(createWorkOverviewRow({
-        iconName: 'paperclip',
-        title: source.name,
-        detail: source.detail,
-        onOpen: () => openInspector('context'),
-      }))
-      inspectorContent.append(sourceSection)
-    }
-
-    const gitChanges = snapshot.git.snapshot?.files.length || 0
-    if (gitChanges > 0) {
-      const workspace = createWorkOverviewSection('版本状态')
-      workspace.append(createWorkOverviewRow({
-        iconName: 'folder',
-        title: snapshot.git.snapshot?.branch || snapshot.workspace.name,
-        detail: `${gitChanges} 处文件变更`,
-        meta: '查看',
-        onOpen: () => openInspector('git'),
-      }))
-      inspectorContent.append(workspace)
-    }
-
-    if (!inspectorContent.childElementCount) {
-      inspectorContent.innerHTML = '<div class="work-overview-empty"><p>当前工作还没有产生可查看的内容。</p></div>'
-    }
-  }
-
   function renderInspector() {
     const snapshot = currentSnapshot
     if (!snapshot) {
       inspectorContent.innerHTML = '<div class="empty-inspector"><p>核心正在启动…</p></div>'
       return
     }
-    const title = app.querySelector<HTMLElement>('#inspector-title')!
-    const overviewBack = app.querySelector<HTMLButtonElement>('#inspector-overview-back')!
     inspectorContent.replaceChildren()
-    inspectorContent.classList.remove('overview-content')
     inspectorContent.classList.toggle('browser-content', currentInspectorTab === 'browser')
-    inspectorPanel.classList.toggle('overview-mode', currentInspectorTab === 'overview')
     inspectorPanel.classList.toggle('browser-mode', currentInspectorTab === 'browser')
-    overviewBack.hidden = currentInspectorTab === 'overview'
     scheduleBrowserBoundsSync()
 
     const panelActions = {
@@ -3282,21 +3056,13 @@ export function mountWorkbench(app: HTMLDivElement): void {
       openSettings: (section: 'mcp' | 'workpacks') => void settingsCenter?.open(section),
     }
 
-    if (currentInspectorTab === 'overview') {
-      title.textContent = '工作'
-      renderWorkOverview(snapshot)
-      return
-    }
-
     if (currentInspectorTab === 'browser') {
-      title.textContent = '浏览器'
       const active = activeBrowserTab()
       if (!browserSnapshot?.visible || !active) {
-        inspectorContent.innerHTML = '<div class="empty-inspector browser-empty"><div class="empty-orbit">◎</div><h3>打开浏览器</h3><p>浏览网页、本地应用，或让 Agent 在多个标签页中完成任务。</p><button class="empty-inspector-action">开始浏览</button></div>'
+        inspectorContent.innerHTML = `<div class="empty-inspector browser-empty"><div class="empty-module-icon">${icon('browser')}</div><h3>打开浏览器</h3><p>浏览网页、本地应用，或在多个标签页中继续工作。</p><button class="empty-inspector-action">开始浏览</button></div>`
         inspectorContent.querySelector<HTMLButtonElement>('.empty-inspector-action')?.addEventListener('click', () => void openBrowserInInspector(active?.url || 'about:blank'))
         return
       }
-      browserDisplayMode = 'inspector'
       const browserPanel = document.createElement('div')
       browserPanel.className = 'inspector-browser'
 
@@ -3363,10 +3129,6 @@ export function mountWorkbench(app: HTMLDivElement): void {
 
       const actions = document.createElement('div')
       actions.className = 'inspector-browser-actions'
-      const expand = document.createElement('button')
-      expand.title = '在工作区展开'
-      expand.innerHTML = icon('panel')
-      expand.addEventListener('click', expandBrowser)
       const external = document.createElement('button')
       external.dataset.browserCommand = 'external'
       external.title = '在默认浏览器中打开'
@@ -3376,11 +3138,11 @@ export function mountWorkbench(app: HTMLDivElement): void {
         const url = activeBrowserTab()?.url
         if (url && url !== 'about:blank') void bridge?.openExternal(url).catch(error => showToast(errorMessage(error)))
       })
-      actions.append(external, expand)
+      actions.append(external)
       toolbar.append(navigation, addressForm, actions)
       const surface = document.createElement('div')
       surface.className = 'inspector-browser-surface'
-      surface.innerHTML = `<div>${icon('globe')}<p>页面正在准备</p></div>`
+      surface.innerHTML = `<div>${icon('browser')}<p>页面正在准备</p></div>`
       browserPanel.append(tabbar, toolbar, surface)
       inspectorContent.append(browserPanel)
       scheduleBrowserBoundsSync()
@@ -3388,14 +3150,12 @@ export function mountWorkbench(app: HTMLDivElement): void {
     }
 
     if (currentInspectorTab === 'activity') {
-      title.textContent = '工作进度'
       renderActivityPanel(inspectorContent, snapshot, panelActions, selectedWorkRunId)
       prependComputerActivity()
       return
     }
 
     if (currentInspectorTab === 'outputs') {
-      title.textContent = selectedChange ? '变更预览' : selectedArtifactId ? '产物预览' : '产物'
       if (selectedChange) {
         const back = document.createElement('button')
         back.className = 'inspector-back'
@@ -3422,7 +3182,7 @@ export function mountWorkbench(app: HTMLDivElement): void {
         .filter(item => item.view?.category === 'service' && item.view.previewUrl)
         .sort((left, right) => right.task.updatedAt - left.task.updatedAt)
       if (changes.length === 0 && previews.length === 0 && artifacts.length === 0) {
-        inspectorContent.innerHTML = '<div class="empty-inspector"><div class="empty-orbit">◇</div><h3>暂无产物</h3><p>生成的文件、修改和可预览结果会出现在这里。</p></div>'
+        inspectorContent.innerHTML = `<div class="empty-inspector"><div class="empty-module-icon">${icon('outputs')}</div><h3>暂无产物</h3><p>生成的文件、修改和可预览结果会出现在这里。</p></div>`
         return
       }
       const list = document.createElement('div')
@@ -3455,7 +3215,7 @@ export function mountWorkbench(app: HTMLDivElement): void {
         button.className = `output-item local-preview-item ${task.status}`
         button.disabled = !view.active
         const glyph = document.createElement('span')
-        glyph.textContent = '◎'
+        glyph.innerHTML = icon('preview')
         const copy = document.createElement('span')
         const name = document.createElement('strong')
         name.textContent = '本地预览'
@@ -3493,12 +3253,10 @@ export function mountWorkbench(app: HTMLDivElement): void {
     }
 
     if (currentInspectorTab === 'git') {
-      title.textContent = 'Git'
       renderGitPanel(inspectorContent, snapshot, panelActions)
       return
     }
 
-    title.textContent = '上下文'
     renderContextPanel(inspectorContent, snapshot, panelActions)
     const group = document.createElement('div')
     group.className = 'inspector-group'
@@ -4681,32 +4439,8 @@ export function mountWorkbench(app: HTMLDivElement): void {
   app.querySelector('#composer-context')?.addEventListener('click', () => openInspector('context'))
   app.querySelector('#model-pill')?.addEventListener('click', event => void settingsCenter?.openModelPicker(event.currentTarget as HTMLElement))
   app.querySelector('#reasoning-tab')?.addEventListener('click', event => void settingsCenter?.openReasoningPicker(event.currentTarget as HTMLElement))
-  app.querySelector('#inspector-toggle')?.addEventListener('click', () => shell.classList.contains('inspector-open') ? closeInspector() : openInspector('overview'))
-  app.querySelector('#inspector-close')?.addEventListener('click', () => closeInspector())
-  app.querySelector('#inspector-overview-back')?.addEventListener('click', () => {
-    selectedChange = null
-    selectedArtifactId = null
-    openInspector('overview')
-  })
+  inspectorToggle.addEventListener('click', () => shell.classList.contains('inspector-open') ? closeInspector() : openInspector(inspectorLandingTab()))
   app.querySelector('#inspector-scrim')?.addEventListener('click', () => closeInspector())
-  browserToggle?.addEventListener('click', () => {
-    if (!browserSnapshot?.visible) void openBrowser()
-    else if (browserDisplayMode === 'workspace') void closeBrowser()
-    else expandBrowser()
-  })
-  app.querySelector('#browser-close')?.addEventListener('click', () => void closeBrowser())
-  app.querySelector('#browser-new-tab')?.addEventListener('click', () => void bridge?.browserNewTab().then(renderBrowserSnapshot).catch(error => showToast(errorMessage(error))))
-  browserBack.addEventListener('click', () => void bridge?.browserBack().then(renderBrowserSnapshot).catch(error => showToast(errorMessage(error))))
-  browserForward.addEventListener('click', () => void bridge?.browserForward().then(renderBrowserSnapshot).catch(error => showToast(errorMessage(error))))
-  browserReload.addEventListener('click', () => void bridge?.browserReload().then(renderBrowserSnapshot).catch(error => showToast(errorMessage(error))))
-  app.querySelector('#browser-address-form')?.addEventListener('submit', event => {
-    event.preventDefault()
-    navigateBrowserAddress(browserAddress.value)
-  })
-  app.querySelector('#browser-open-external')?.addEventListener('click', () => {
-    const url = activeBrowserTab()?.url
-    if (url && url !== 'about:blank') void bridge?.openExternal(url).catch(error => showToast(errorMessage(error)))
-  })
   inspectorResizeHandle.addEventListener('pointerdown', event => {
     if (!shell.classList.contains('inspector-open')) return
     event.preventDefault()
@@ -4768,7 +4502,6 @@ export function mountWorkbench(app: HTMLDivElement): void {
     syncComposerMenuPlacement()
     settingsCenter?.repositionComposerPicker()
   })
-  new ResizeObserver(() => scheduleBrowserBoundsSync()).observe(browserSurface)
   new ResizeObserver(() => scheduleBrowserBoundsSync()).observe(inspectorPanel)
   app.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach(button => button.addEventListener('click', async () => {
     if (!bridge || !currentSnapshot || button.dataset.mode === currentSnapshot.runtime.mode) return
@@ -4869,11 +4602,12 @@ export function mountWorkbench(app: HTMLDivElement): void {
     }
     if (event.metaKey && event.key.toLowerCase() === 'l' && browserSnapshot?.visible) {
       event.preventDefault()
-      const address = browserDisplayMode === 'inspector'
-        ? inspectorContent.querySelector<HTMLInputElement>('.inspector-browser-address')
-        : browserAddress
-      address?.focus()
-      address?.select()
+      openInspector('browser')
+      window.requestAnimationFrame(() => {
+        const address = inspectorContent.querySelector<HTMLInputElement>('.inspector-browser-address')
+        address?.focus()
+        address?.select()
+      })
       return
     }
     if (event.metaKey && event.key.toLowerCase() === 't' && browserSnapshot?.visible) {
@@ -4893,7 +4627,6 @@ export function mountWorkbench(app: HTMLDivElement): void {
     if (event.key === 'Escape') {
       if (commandPalette?.isOpen()) commandPalette.close()
       else if (composerMenu.classList.contains('visible') || capabilityMenu.classList.contains('visible') || approvalMenu.classList.contains('visible')) closeComposerMenus()
-      else if (browserDisplayMode === 'workspace') void closeBrowser()
       else if (shell.classList.contains('inspector-open')) closeInspector()
     }
   })

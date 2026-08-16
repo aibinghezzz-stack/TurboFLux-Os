@@ -24,9 +24,10 @@ describe('workbench task panel product boundary', () => {
   it('keeps task surfaces independent from the work drawer', () => {
     expect(workbenchSource).toContain('id="task-companion"')
     expect(workbenchSource).toContain('id="work-plan-dock"')
-    expect(workbenchSource).toContain('id="inspector-toggle" title="打开工作侧栏">${icon(\'panel\')}</button>')
-    expect(workbenchSource.indexOf('id="inspector-toggle"')).toBeLessThan(workbenchSource.indexOf('</main>'))
-    expect(workbenchSource).toContain('id="inspector-close"')
+    expect(workbenchSource.match(/id="inspector-toggle"/g) ?? []).toHaveLength(1)
+    expect(workbenchSource).toContain('class="icon-button work-drawer-toggle" id="inspector-toggle"')
+    expect(workbenchSource.indexOf('</main>')).toBeLessThan(workbenchSource.indexOf('id="inspector-toggle"'))
+    expect(workbenchSource).not.toContain('id="inspector-close"')
     expect(workbenchSource).not.toContain("icon('summary')")
     expect(workbenchSource).not.toContain('task-panel-toggle')
     expect(styles).toContain('.task-companion { position: absolute;')
@@ -35,6 +36,27 @@ describe('workbench task panel product boundary', () => {
     expect(workbenchSource).toContain("if (item.kind === 'preview' && preview?.url) void openBrowserInInspector(preview.url)")
     expect(workbenchSource).not.toContain('inspectorDismissedConversationIds')
     expect(styles).toContain('.desktop-shell.inspector-open .main-panel { margin-right: var(--work-panel-width); }')
+  })
+
+  it('keeps the work drawer populated with real modules and dedicated icons', () => {
+    expect(workbenchSource).toContain("{ tab: 'activity', label: '任务', iconName: 'activity' }")
+    expect(workbenchSource).toContain("{ tab: 'browser', label: '浏览器', iconName: 'browser' }")
+    expect(workbenchSource).toContain("{ tab: 'outputs', label: '产物', iconName: 'outputs' }")
+    expect(workbenchSource).toContain("{ tab: 'context', label: '上下文', iconName: 'context' }")
+    expect(workbenchSource).toContain("{ tab: 'git', label: '版本', iconName: 'git' }")
+    expect(workbenchSource).not.toContain("tab: 'terminal'")
+    expect(workbenchSource).not.toContain('createWorkOverviewSection')
+    expect(workbenchSource).not.toContain('renderWorkOverview')
+    expect(workbenchSource).toContain('? { x: 0, y: 0, width: 0, height: 0 }')
+    expect(workbenchSource).not.toContain('empty-orbit')
+    expect(workbenchSource).not.toContain("glyph.textContent = '◎'")
+    expect(workbenchSource).not.toContain("{ tab: 'overview', label: '概览'")
+    expect(styles).toContain('.inspector-nav { display: flex;')
+    expect(styles).toContain('.inspector-primary-tabs { display: grid;')
+    expect(styles).toContain('.inspector-utility-tabs { display: flex;')
+    expect(styles).not.toContain('.work-overview-')
+    expect(styles).toContain('.empty-module-icon .icon')
+    expect(styles).not.toContain('.empty-orbit')
   })
 
   it('uses distinct semantic icons for every approval policy', () => {
@@ -52,10 +74,11 @@ describe('workbench task panel product boundary', () => {
     expect(source).toContain('isCurrentRun &&')
   })
 
-  it('does not repeat the full request in the work overview', () => {
-    expect(workbenchSource).not.toContain("currentStep?.title || workRun.objective")
-    expect(workbenchSource).toContain('const work = presentWorkRun(workRun)')
-    expect(workbenchSource).toContain("stage.querySelector('strong')!.textContent = work.title")
+  it('does not repeat the full request in the task panel', () => {
+    expect(source).not.toContain('run.objective')
+    expect(source).toContain('const presentation = presentWorkRun(run)')
+    expect(source).toContain('title.textContent = presentation.statusLabel')
+    expect(source).toContain('presentation.currentStep ? presentation.currentStep.title')
   })
 
   it('prefers semantic work stages and keeps tool categories as fallback details', () => {

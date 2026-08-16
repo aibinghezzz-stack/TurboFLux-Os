@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('turbofluxDesktop', {
   computerRefresh: () => ipcRenderer.invoke('desktop:computer-refresh'),
   computerRequestPermission: kind => ipcRenderer.invoke('desktop:computer-request-permission', kind),
   computerOpenPermissionSettings: kind => ipcRenderer.invoke('desktop:computer-open-permission-settings', kind),
+  computerRelaunch: () => ipcRenderer.invoke('desktop:computer-relaunch'),
   computerTakeControl: () => ipcRenderer.invoke('desktop:computer-take-control'),
   computerResumeControl: () => ipcRenderer.invoke('desktop:computer-resume-control'),
   computerEmergencyStop: () => ipcRenderer.invoke('desktop:computer-emergency-stop'),

@@ -538,6 +538,19 @@ function computerPermissionStatus(snapshot, kind) {
   throw new Error(`Unknown computer permission: ${kind}`)
 }
 
+function computerPermissionOutcome(snapshot, kind) {
+  const status = computerPermissionStatus(snapshot, kind)
+  if (status.state === 'granted') return 'granted'
+  if (status.restartRequired) return 'restart-required'
+  return 'needs-settings'
+}
+
+function relaunchDesktopApplication() {
+  app.relaunch()
+  app.quit()
+  return true
+}
+
 function computerPermissionGuide(kind) {
   const guide = COMPUTER_PERMISSION_GUIDES[kind]
   if (!guide) throw new Error(`Unknown computer permission: ${kind}`)
@@ -554,9 +567,8 @@ function computerPermissionIdentity(kind) {
 async function requestComputerPermission(system, kind) {
   const guide = computerPermissionGuide(kind)
   const current = system.getSnapshot()
-  if (computerPermissionStatus(current, kind).state === 'granted') {
-    return { kind, outcome: 'granted', snapshot: current }
-  }
+  const currentOutcome = computerPermissionOutcome(current, kind)
+  if (currentOutcome !== 'needs-settings') return { kind, outcome: currentOutcome, snapshot: current }
   const identityHint = `在系统列表中允许“${computerPermissionIdentity(kind)}”。`
   const prompt = await dialog.showMessageBox(mainWindow, {
     type: 'info',
@@ -572,7 +584,7 @@ async function requestComputerPermission(system, kind) {
   const snapshot = await system.requestPermission(kind)
   return {
     kind,
-    outcome: computerPermissionStatus(snapshot, kind).state === 'granted' ? 'granted' : 'needs-settings',
+    outcome: computerPermissionOutcome(snapshot, kind),
     snapshot,
   }
 }
@@ -599,6 +611,20 @@ async function requestComputerPermissionForAgent(system, kind) {
   const first = await requestComputerPermission(system, kind)
   if (first.outcome === 'granted') return true
   if (first.outcome === 'cancelled') return false
+  if (first.outcome === 'restart-required') {
+    const restart = await dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      title: '电脑操控权限已经开启',
+      message: '需要重新打开 TurboFlux 让原生操控进程继承权限',
+      detail: '当前任务和对话会保留。重新打开后再次执行这一步即可，不需要重复前往系统设置授权。',
+      buttons: ['重新打开 TurboFlux', '稍后'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    })
+    if (restart.response === 0) relaunchDesktopApplication()
+    return false
+  }
   const guide = computerPermissionGuide(kind)
   const prompt = await dialog.showMessageBox(mainWindow, {
     type: 'info',
@@ -765,6 +791,7 @@ ipcMain.handle('desktop:computer-refresh', async () => {
 })
 ipcMain.handle('desktop:computer-request-permission', (_event, kind) => requestComputerPermission(requireComputerSystem(), requireText(kind, 'permission')))
 ipcMain.handle('desktop:computer-open-permission-settings', (_event, kind) => openComputerPermissionSettings(requireComputerSystem(), requireText(kind, 'permission')))
+ipcMain.handle('desktop:computer-relaunch', () => relaunchDesktopApplication())
 ipcMain.handle('desktop:computer-take-control', () => takeComputerControl())
 ipcMain.handle('desktop:computer-resume-control', () => resumeComputerControl())
 ipcMain.handle('desktop:computer-emergency-stop', () => emergencyStopComputerControl())
